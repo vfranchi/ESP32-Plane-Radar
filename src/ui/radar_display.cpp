@@ -11,6 +11,7 @@
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
+#include "ui/aircraft_icon_data.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
@@ -172,6 +173,34 @@ void initTagLabelMetrics() {
   s_tag_label_metrics_ready = true;
 }
 
+/** RGB565 from logical RGB, honouring the GC9A01 BGR panel order. */
+uint16_t aircraftColor565(uint8_t r, uint8_t g, uint8_t b) {
+  return config::kDisplayRgbOrder ? tft.color565(b, g, r)
+                                  : tft.color565(r, g, b);
+}
+
+// Must be a LovyanGFX colour class: pixelcopy calls pal[i].get().
+lgfx::rgb565_t s_icon_palette[16];
+
+/**
+ * Build the 16-entry icon palette: index 0 is the transparent key, 1..15 are the
+ * aircraft colour pre-blended over the radar background so the icon reads as
+ * anti-aliased without any runtime alpha work.
+ */
+void initAircraftIconPalette() {
+  for (int i = 1; i < 16; ++i) {
+    const int a = (i * 255) / 15;
+    const uint8_t r = static_cast<uint8_t>(
+        (radar::kAircraftR * a + radar::kBgR * (255 - a)) / 255);
+    const uint8_t g = static_cast<uint8_t>(
+        (radar::kAircraftG * a + radar::kBgG * (255 - a)) / 255);
+    const uint8_t b = static_cast<uint8_t>(
+        (radar::kAircraftB * a + radar::kBgB * (255 - a)) / 255);
+    s_icon_palette[i] = aircraftColor565(r, g, b);
+  }
+  s_icon_palette[0] = aircraftColor565(radar::kBgR, radar::kBgG, radar::kBgB);
+}
+
 void initPalette() {
   radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
@@ -195,6 +224,7 @@ void initPalette() {
       tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
   radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
                                           radar::kRunwayLabelB);
+  initAircraftIconPalette();
 }
 
 constexpr float kKmPerDeg = 111.0f;
@@ -328,26 +358,28 @@ void noseTip(int cx, int cy, float heading_deg, int* tip_x, int* tip_y) {
   *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * radar::kAircraftNoseLenPx));
 }
 
-void drawHeadingTriangle(int cx, int cy, float heading_deg, uint16_t color) {
-  constexpr float kDegToRad = 0.01745329252f;
-  const float rad = heading_deg * kDegToRad;
-  const float sin_h = sinf(rad);
-  const float cos_h = cosf(rad);
+static_assert(data::aircraft_icon::kSize == radar::kAircraftIconSizePx,
+              "icon data and theme size disagree");
 
-  int tip_x = 0;
-  int tip_y = 0;
-  noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
+/** Nearest pre-rendered rotation for a heading in degrees. */
+int aircraftIconIndex(float heading_deg) {
+  constexpr float kDegPerStep =
+      360.0f / static_cast<float>(data::aircraft_icon::kRotations);
+  int idx = static_cast<int>(lroundf(heading_deg / kDegPerStep));
+  idx %= data::aircraft_icon::kRotations;
+  return idx < 0 ? idx + data::aircraft_icon::kRotations : idx;
+}
 
-  const int base_x =
-      cx - static_cast<int>(lroundf(sin_h * static_cast<float>(radar::kAircraftTailLenPx)));
-  const int base_y =
-      cy + static_cast<int>(lroundf(cos_h * static_cast<float>(radar::kAircraftTailLenPx)));
-
-  const int wing_x = static_cast<int>(lroundf(cos_h * radar::kAircraftTailHalfPx));
-  const int wing_y = static_cast<int>(lroundf(sin_h * radar::kAircraftTailHalfPx));
-
-  s_draw->fillTriangle(tip_x, tip_y, base_x + wing_x, base_y + wing_y,
-                       base_x - wing_x, base_y - wing_y, color);
+void drawAircraftIcon(int cx, int cy, float heading_deg) {
+  const int idx = aircraftIconIndex(heading_deg);
+  const uint8_t* rot = data::aircraft_icon::kIcon +
+                       static_cast<size_t>(idx) *
+                           data::aircraft_icon::kBytesPerRotation;
+  const int off = -radar::kAircraftIconHalfPx;
+  s_draw->pushImage(cx + off, cy + off, data::aircraft_icon::kSize,
+                    data::aircraft_icon::kSize, rot,
+                    data::aircraft_icon::kTransparentIndex,
+                    lgfx::color_depth_t::palette_4bit, s_icon_palette);
 }
 
 void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
@@ -414,8 +446,7 @@ void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
   const int block_h = line_h * 3;
   int ly = y - block_h / 2;
 
-  const int symbol_half =
-      radar::kAircraftNoseLenPx + radar::kAircraftTailHalfPx;
+  const int symbol_half = radar::kAircraftSymbolHalfPx;
   // West (left): tag toward center on the right; east (right): tag on the left.
   const bool tag_on_right = x < radar::kCenterX;
   int anchor_x = 0;
@@ -538,7 +569,7 @@ void drawAircraft() {
     const int y = items[d].y;
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots, radar::kColorTrackVector);
-    drawHeadingTriangle(x, y, planes[i].nose_deg, radar::kColorAircraft);
+    drawAircraftIcon(x, y, planes[i].nose_deg);
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;

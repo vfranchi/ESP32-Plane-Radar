@@ -31,10 +31,14 @@ constexpr float kGridStrokeHalfWidth = 1.0f;
 
 constexpr int kCenterDotRadius = 2;
 
-/** Filled aircraft symbol (nose triangle). */
-constexpr int kAircraftNoseLenPx = 8;
-constexpr int kAircraftTailLenPx = 3;
-constexpr int kAircraftTailHalfPx = 4;
+/** Icon bounding box edge, px (square). Must match data::aircraft_icon::kSize. */
+constexpr int kAircraftIconSizePx = 19;
+/** Half the icon box: blit offset and speed-vector origin. */
+constexpr int kAircraftIconHalfPx = kAircraftIconSizePx / 2;
+/** Distance from the aircraft position to its nose tip = vector origin (px). */
+constexpr int kAircraftNoseLenPx = kAircraftIconHalfPx;
+/** Tag clearance from the symbol centre; clears the icon at any rotation (px). */
+constexpr int kAircraftSymbolHalfPx = 14;
 /** Track vector: ground distance covered in this many seconds at current gs. */
 constexpr float kAircraftTrackHorizonSec = 60.0f;
 /** Minimum visible vector when gs > 0 (px). */
@@ -52,9 +56,8 @@ constexpr int kRunwayLabelHeightPx = kCardinalLabelHeightPx;
 constexpr int kRunwayLabelGapPx = 3;
 /** Gap from triangle edge to tag block (px). */
 constexpr int kAircraftLabelGapPx = 1;
-/** Keep symbol centroid inside outer ring by at least this inset (px). */
-constexpr int kAircraftInsideRingInsetPx =
-    kAircraftNoseLenPx + kAircraftTailHalfPx + 1;
+/** Worst-case icon half-diagonal, ceil(19 / 2 * sqrt(2)): keeps it inside the ring. */
+constexpr int kAircraftInsideRingInsetPx = 14;
 
 /** Beyond-ring traffic: bearing cues on screen rim (correct direction, fixed radius). */
 constexpr int kBeyondRingDotRadiusPx = 4;
@@ -69,15 +72,17 @@ constexpr uint8_t kBgB = 28;
 constexpr uint8_t kGridR = 16;
 constexpr uint8_t kGridG = 100;
 constexpr uint8_t kGridB = 32;
-constexpr uint8_t kAircraftR = 255;
-constexpr uint8_t kAircraftG = 0;
-constexpr uint8_t kAircraftB = 0;
+/** FlightRadar24-style warm yellow; the track vector stays magenta. */
+constexpr uint8_t kAircraftR = 250;
+constexpr uint8_t kAircraftG = 204;
+constexpr uint8_t kAircraftB = 60;
 constexpr uint8_t kTrackR = 255;
 constexpr uint8_t kTrackG = 0;
 constexpr uint8_t kTrackB = 255;
-constexpr uint8_t kTagTypeR = 255;
-constexpr uint8_t kTagTypeG = 200;
-constexpr uint8_t kTagTypeB = 0;
+/** Light cyan; a yellow type tag would vanish against the yellow icon. */
+constexpr uint8_t kTagTypeR = 170;
+constexpr uint8_t kTagTypeG = 240;
+constexpr uint8_t kTagTypeB = 255;
 constexpr uint8_t kTagAltR = 90;
 constexpr uint8_t kTagAltG = 200;
 constexpr uint8_t kTagAltB = 255;

@@ -58,7 +58,7 @@ constexpr bool kAdsbShowGroundAircraft = false;
 /** Render tick: 100 ms = 10 FPS. Independent of the ADS-B poll cadence. */
 constexpr unsigned long kFrameIntervalMs = 100;
 /** Print per-frame render timings and run a boot burst benchmark on Serial. */
-constexpr bool kPerfLog = false;
+constexpr bool kPerfLog = true;
 
 // --- UI colors (RGB565) — status screens ---
 constexpr uint16_t kColorBlack = 0x0000;

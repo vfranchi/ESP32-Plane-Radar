@@ -12,6 +12,7 @@
 #include "services/adsb_client.h"
 #include "services/dead_reckoning.h"
 #include "services/radar_location.h"
+#include "ui/radar_line.h"
 #include "ui/radar_projection.h"
 #include "ui/aircraft_icon_data.h"
 #include "ui/radar_range.h"
@@ -393,8 +394,10 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
   if (ex == tip_x && ey == tip_y) {
     return;
   }
-  s_draw->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
-                       color);
+  // The track line is long and scales per aircraft, so it must not use drawWideLine:
+  // one aircraft measured 3.6 ms of the frame for the vector alone.
+  line::drawThick(*s_draw, tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
+                  color);
 }
 
 void applyTagStyle() {

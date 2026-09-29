@@ -20,6 +20,7 @@ bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_adsb_fetch_ms = 0;
+unsigned long g_last_frame_ms = 0;
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -109,9 +110,22 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
-    } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-      g_last_adsb_fetch_ms = millis();
-      fetchAndDrawAircraft();
+    } else {
+      // Render before polling: the frame just before a fetch shows the extrapolation
+      // up to that instant, and the fetch then restarts the cycle from ground truth.
+      if (millis() - g_last_frame_ms >= config::kFrameIntervalMs) {
+        // Advance by one period rather than snapping to now: the render itself takes
+        // ~30 ms, and snapping added that to every period (10 FPS measured as 7.7).
+        g_last_frame_ms += config::kFrameIntervalMs;
+        if (millis() - g_last_frame_ms >= config::kFrameIntervalMs) {
+          g_last_frame_ms = millis();  // resync after a stall, e.g. a blocking fetch
+        }
+        ui::radarDisplayRefreshAircraft();
+      }
+      if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
+        g_last_adsb_fetch_ms = millis();
+        fetchAndDrawAircraft();
+      }
     }
   }
 

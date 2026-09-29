@@ -9,6 +9,7 @@
 #include "hardware/display_font.h"
 #include "services/radar_location.h"
 #include "ui/radar_projection.h"
+#include "ui/radar_line.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 
@@ -265,18 +266,6 @@ void clipPointOntoOuterRing(int* x, int* y) {
   *y = cy + static_cast<int>(lroundf(static_cast<float>(dy) * scale));
 }
 
-// Two integer Bresenham passes keep the 2 px weight. drawWideLine costs several ms
-// per call here: it does per-pixel float coverage over the line's bounding box, and
-// this chip has no FPU, so two diagonal runways measured 7 ms of the frame.
-void drawRunwayThickLine(lgfx::LGFXBase& gfx, const CachedRunway& r) {
-  gfx.drawLine(r.x0, r.y0, r.x1, r.y1, radar::kColorRunway);
-  if (abs(r.x1 - r.x0) >= abs(r.y1 - r.y0)) {
-    gfx.drawLine(r.x0, r.y0 + 1, r.x1, r.y1 + 1, radar::kColorRunway);
-  } else {
-    gfx.drawLine(r.x0 + 1, r.y0, r.x1 + 1, r.y1, radar::kColorRunway);
-  }
-}
-
 void airportLabelPos(const data::large_airports::Airport& ap, CachedLabel* out) {
   int ax = 0;
   int ay = 0;
@@ -358,7 +347,9 @@ void drawLargeAirportRunways(lgfx::LGFXBase& gfx) {
   s_last_runway_draw_count = s_cache.runway_count;
 
   for (size_t i = 0; i < s_cache.runway_count; ++i) {
-    drawRunwayThickLine(gfx, s_cache.runways[i]);
+    const CachedRunway& r = s_cache.runways[i];
+    line::drawThick(gfx, r.x0, r.y0, r.x1, r.y1, radar::kRunwayLineHalfWidth,
+                    radar::kColorRunway);
   }
 
   if (s_cache.label_count == 0) {

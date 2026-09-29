@@ -21,6 +21,7 @@ constexpr unsigned long kRequestTimeoutMs = 6000;
 
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
+unsigned long s_last_fetch_ms = 0;
 PollFn s_poll_fn = nullptr;
 
 void pollNetwork() {
@@ -56,21 +57,14 @@ float pickNoseHeading(const JsonObject& plane) {
   return 0.0f;
 }
 
-float pickTrackHeading(const JsonObject& plane) {
+bool pickTrackHeading(const JsonObject& plane, float* out) {
   float v = 0.0f;
-  if (readJsonFloat(plane, "track", &v)) {
-    return v;
+  if (readJsonFloat(plane, "track", &v) || readJsonFloat(plane, "true_heading", &v) ||
+      readJsonFloat(plane, "mag_heading", &v) || readJsonFloat(plane, "dir", &v)) {
+    *out = v;
+    return true;
   }
-  if (readJsonFloat(plane, "true_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "mag_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "dir", &v)) {
-    return v;
-  }
-  return 0.0f;
+  return false;
 }
 
 float pickGroundSpeed(const JsonObject& plane) {
@@ -188,6 +182,8 @@ size_t aircraftCount() { return s_aircraft_count; }
 
 const Aircraft* aircraftList() { return s_aircraft; }
 
+unsigned long lastFetchMillis() { return s_last_fetch_ms; }
+
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
@@ -234,13 +230,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].lat = plane["lat"].as<float>();
     s_aircraft[n].lon = plane["lon"].as<float>();
     s_aircraft[n].nose_deg = pickNoseHeading(plane);
-    s_aircraft[n].track_deg = pickTrackHeading(plane);
+    float trk = 0.0f;
+    s_aircraft[n].track_valid = pickTrackHeading(plane, &trk);
+    s_aircraft[n].track_deg = trk;
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
     fillTagFields(&s_aircraft[n], plane);
     ++n;
   }
 
   s_aircraft_count = n;
+  s_last_fetch_ms = millis();
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
 }

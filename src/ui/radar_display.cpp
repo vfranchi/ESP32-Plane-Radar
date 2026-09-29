@@ -10,6 +10,7 @@
 #include "hardware/display.h"
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
+#include "services/dead_reckoning.h"
 #include "services/radar_location.h"
 #include "ui/radar_projection.h"
 #include "ui/aircraft_icon_data.h"
@@ -512,6 +513,11 @@ void drawAircraft() {
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+  const float elapsed_s =
+      static_cast<float>(millis() - services::adsb::lastFetchMillis()) / 1000.0f;
+  // Same cosine the projection uses, so the extrapolated point stays on the track
+  // line instead of drifting with latitude.
+  const float cos_center_lat = projection::cosCenterLat();
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
@@ -519,15 +525,26 @@ void drawAircraft() {
   size_t dot_count = 0;
 
   for (size_t i = 0; i < n; ++i) {
+    // The list holds the poll's ground truth; nudge it forward so the radar moves
+    // between polls. Aircraft without a track field are left where they were
+    // reported rather than being flown due north.
+    float lat = planes[i].lat;
+    float lon = planes[i].lon;
+    if (planes[i].track_valid && planes[i].gs_knots > 0.0f) {
+      services::dead_reckoning::extrapolate(
+          planes[i].lat, planes[i].lon, planes[i].track_deg, planes[i].gs_knots,
+          elapsed_s, cos_center_lat, &lat, &lon);
+    }
+
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
-    offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
 
     if (isInsideOuterRingKm(dist_km)) {
       int x = 0;
       int y = 0;
-      latLonToScreen(planes[i].lat, planes[i].lon, &x, &y);
+      latLonToScreen(lat, lon, &x, &y);
       items[draw_count].index = i;
       items[draw_count].x = x;
       items[draw_count].y = y;
@@ -538,8 +555,7 @@ void drawAircraft() {
 
     int dot_x = 0;
     int dot_y = 0;
-    if (!beyondRingEdgeDotFromLatLon(planes[i].lat, planes[i].lon, &dot_x,
-                                     &dot_y)) {
+    if (!beyondRingEdgeDotFromLatLon(lat, lon, &dot_x, &dot_y)) {
       continue;
     }
     dots[dot_count].x = dot_x;

@@ -13,12 +13,17 @@ struct Aircraft {
   char callsign[9];
   char type[5];
   char alt[12];
+  /** false when the feed had no track/heading field; track_deg is then meaningless. */
+  bool track_valid;
 };
 
 constexpr size_t kMaxAircraft = 64;
 
 size_t aircraftCount();
 const Aircraft* aircraftList();
+
+/** millis() at the last successful fetch; aircraft positions are relative to it. */
+unsigned long lastFetchMillis();
 
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();

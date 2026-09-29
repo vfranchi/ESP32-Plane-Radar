@@ -1,6 +1,7 @@
 #include "services/adsb_client.h"
 
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 
 #include <ArduinoJson.h>
@@ -29,12 +30,32 @@ PollFn s_poll_fn = nullptr;
 SemaphoreHandle_t s_mutex = nullptr;
 // Set for the whole of fetchUpdate(), cleared on every return path.
 volatile bool s_fetch_active = false;
+// Wall clock the in-flight fetch started at; 0 when idle.
+volatile unsigned long s_fetch_start_ms = 0;
+// Set by requestFetchAbort() to break the in-flight fetch out of its waits.
+volatile bool s_fetch_abort = false;
 
 /** Marks the fetch in flight and guarantees the clear on any early return. */
 struct FetchInProgressGuard {
-  FetchInProgressGuard() { s_fetch_active = true; }
-  ~FetchInProgressGuard() { s_fetch_active = false; }
+  FetchInProgressGuard() {
+    s_fetch_abort = false;
+    s_fetch_start_ms = millis();
+    s_fetch_active = true;
+  }
+  ~FetchInProgressGuard() {
+    s_fetch_active = false;
+    s_fetch_start_ms = 0;
+  }
 };
+
+/**
+ * Re-checked at every wait point of the fetch. Either the watchdog asked us to
+ * give up, or the station dropped its link mid-request -- and a fetch with no
+ * link can only burn time getting nowhere.
+ */
+bool fetchShouldStop() {
+  return s_fetch_abort || WiFi.status() != WL_CONNECTED;
+}
 
 /** Publish parsed aircraft to the shared buffer atomically. */
 void publish(const Aircraft* src, size_t count) {
@@ -60,7 +81,7 @@ void pollNetwork() {
 int performGetWithPoll(HTTPClient& http) {
   http.setConnectTimeout(kConnectTimeoutMs);
   const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
+  while (millis() < deadline && !fetchShouldStop()) {
     pollNetwork();
     const int code = http.GET();
     if (code > 0) {
@@ -106,7 +127,7 @@ class PollingSocketSource {
   bool refill() {
     pos_ = 0;
     len_ = 0;
-    while (millis() < deadline_) {
+    while (millis() < deadline_ && !fetchShouldStop()) {
       pollNetwork();
       const int available = stream_->available();
       if (available > 0) {
@@ -267,6 +288,12 @@ unsigned long lastUpdateMs() { return s_last_update_ms; }
 
 bool fetchInProgress() { return s_fetch_active; }
 
+unsigned long fetchElapsedMs() {
+  return s_fetch_active ? millis() - s_fetch_start_ms : 0;
+}
+
+void requestFetchAbort() { s_fetch_abort = true; }
+
 size_t snapshotAircraft(Aircraft* out, size_t max_out,
                         unsigned long* out_last_update_ms) {
   if (s_mutex != nullptr) {
@@ -324,7 +351,11 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   http.setTimeout(kRequestTimeoutMs);
   const int code = performGetWithPoll(http);
   if (code != HTTP_CODE_OK) {
-    Serial.printf("adsb: HTTP %d\n", code);
+    if (fetchShouldStop()) {
+      Serial.println("adsb: fetch abandoned (abort or link lost)");
+    } else {
+      Serial.printf("adsb: HTTP %d\n", code);
+    }
     http.end();
     return false;
   }

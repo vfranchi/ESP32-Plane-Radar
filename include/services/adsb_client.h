@@ -51,6 +51,15 @@ unsigned long lastUpdateMs();
  */
 bool fetchInProgress();
 
+/** Milliseconds the in-flight fetch has been running; 0 when idle. */
+unsigned long fetchElapsedMs();
+
+/**
+ * Ask the in-flight fetch to give up; it returns false at its next wait point
+ * and the next poll starts clean. Driven by the master timeout watchdog.
+ */
+void requestFetchAbort();
+
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();
 void setPollFn(PollFn fn);

@@ -1,10 +1,12 @@
 #include "ui/radar_display.h"
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <lgfx/v1/lgfx_fonts.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 #include "config.h"
@@ -702,6 +704,35 @@ void drawFetchIndicator() {
                            radar::kColorFetchDot);
 }
 
+/**
+ * Wi-Fi signal strength under the "N" label, e.g. "-60db". WiFi.RSSI() is a
+ * plain local read, so the chrome pass refreshes it with every frame (250 ms)
+ * at no cost. On a near-black plate so rings, runway lines and tags behind it
+ * cannot swallow the reading.
+ */
+void drawSignalLabel() {
+  char text[12];
+  snprintf(text, sizeof(text), "%ddb", WiFi.RSSI());
+
+  // The "N" is drawn with the cardinal font, the reading with the smaller one.
+  applyCardinalStyle();
+  const int top = radar::kCardinalNorthOffsetY + s_draw->fontHeight() +
+                  radar::kSignalLabelGapPx;
+  applyScaleStyle();
+  s_draw->setTextDatum(textdatum_t::top_center);
+
+  const int w = s_draw->textWidth(text);
+  const int h = s_draw->fontHeight();
+  const int x = radar::kCenterX;
+
+  s_draw->fillRect(x - w / 2 - radar::kSignalLabelPadXPx,
+                   top - radar::kSignalLabelPadYPx,
+                   w + radar::kSignalLabelPadXPx * 2,
+                   h + radar::kSignalLabelPadYPx * 2, radar::kColorBackground);
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  s_draw->drawString(text, x, top);
+}
+
 void drawCardinalLabels() {
   const int cx = radar::kCenterX;
   const int cy = radar::kCenterY;
@@ -767,6 +798,8 @@ void renderFrame() {
   {
     const DrawScope scope(s_frame);
     drawAircraft();
+    // Last, so the readout plate sits over rings, runway labels and aircraft.
+    drawSignalLabel();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
@@ -787,6 +820,7 @@ void radarDisplayDraw() {
   const DrawScope scope(tft);
   drawStaticGrid(tft);
   drawAircraft();
+  drawSignalLabel();
   tft.setTextDatum(textdatum_t::top_left);
 }
 

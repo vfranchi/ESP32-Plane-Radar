@@ -44,6 +44,13 @@ constexpr int kAircraftSymbolHalfPx = 14;
 constexpr int kFetchDotRadiusPx = 3;
 /** Gap between the "N" glyph and the dot (px). */
 constexpr int kFetchDotGapPx = 3;
+
+/** Wi-Fi RSSI readout under the "N" label. */
+constexpr int kSignalLabelGapPx = 1;
+/** Padding of its black backing plate around the text (px). */
+constexpr int kSignalLabelPadXPx = 3;
+constexpr int kSignalLabelPadYPx = 1;
+
 /** Track vector: ground distance covered in this many seconds at current gs. */
 constexpr float kAircraftTrackHorizonSec = 60.0f;
 /** Minimum visible vector when gs > 0 (px). */

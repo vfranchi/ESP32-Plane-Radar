@@ -691,7 +691,7 @@ void drawCenterDot(int cx, int cy) {
  * so the dot appears and clears within one frame of the flag changing.
  */
 void drawFetchIndicator() {
-  if (!services::adsb::fetchInProgress()) {
+  if (!radar::debugOverlay() || !services::adsb::fetchInProgress()) {
     return;
   }
   applyCardinalStyle();
@@ -711,6 +711,9 @@ void drawFetchIndicator() {
  * cannot swallow the reading.
  */
 void drawSignalLabel() {
+  if (!radar::debugOverlay()) {
+    return;
+  }
   char text[12];
   snprintf(text, sizeof(text), "%ddb", WiFi.RSSI());
 

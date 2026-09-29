@@ -175,7 +175,7 @@ void initTagLabelMetrics() {
 }
 
 /** RGB565 from logical RGB, honouring the GC9A01 BGR panel order. */
-uint16_t aircraftColor565(uint8_t r, uint8_t g, uint8_t b) {
+uint16_t panelColor565(uint8_t r, uint8_t g, uint8_t b) {
   return config::kDisplayRgbOrder ? tft.color565(b, g, r)
                                   : tft.color565(r, g, b);
 }
@@ -197,9 +197,9 @@ void initAircraftIconPalette() {
         (radar::kAircraftG * a + radar::kBgG * (255 - a)) / 255);
     const uint8_t b = static_cast<uint8_t>(
         (radar::kAircraftB * a + radar::kBgB * (255 - a)) / 255);
-    s_icon_palette[i] = aircraftColor565(r, g, b);
+    s_icon_palette[i] = panelColor565(r, g, b);
   }
-  s_icon_palette[0] = aircraftColor565(radar::kBgR, radar::kBgG, radar::kBgB);
+  s_icon_palette[0] = panelColor565(radar::kBgR, radar::kBgG, radar::kBgB);
 }
 
 void initPalette() {
@@ -207,20 +207,19 @@ void initPalette() {
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
   radar::kColorLabel = tft.color565(255, 255, 255);
   radar::kColorCenter = tft.color565(255, 255, 255);
-  // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
-  if (config::kDisplayRgbOrder) {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
-  } else {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
-  }
+  // Background, grid, runway and label colours were tuned by eye against this
+  // BGR panel, so they are left untouched. The colours below must render as
+  // named, so they go through panelColor565 -- without it, a logical cyan comes
+  // out yellow on screen (that was the original tag bug).
+  radar::kColorAircraft = panelColor565(radar::kAircraftR, radar::kAircraftG,
+                                        radar::kAircraftB);
+  // Magenta is R==B, so the swap is a no-op here.
   radar::kColorTrackVector =
       tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
   radar::kColorTagType =
-      tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
+      panelColor565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
   radar::kColorTagAltitude =
-      tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
+      panelColor565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
   radar::kColorRunway =
       tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
   radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,

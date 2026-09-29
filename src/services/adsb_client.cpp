@@ -27,6 +27,14 @@ size_t s_aircraft_count = 0;
 unsigned long s_last_update_ms = 0;
 PollFn s_poll_fn = nullptr;
 SemaphoreHandle_t s_mutex = nullptr;
+// Set for the whole of fetchUpdate(), cleared on every return path.
+volatile bool s_fetch_active = false;
+
+/** Marks the fetch in flight and guarantees the clear on any early return. */
+struct FetchInProgressGuard {
+  FetchInProgressGuard() { s_fetch_active = true; }
+  ~FetchInProgressGuard() { s_fetch_active = false; }
+};
 
 /** Publish parsed aircraft to the shared buffer atomically. */
 void publish(const Aircraft* src, size_t count) {
@@ -257,6 +265,8 @@ const Aircraft* aircraftList() { return s_aircraft; }
 
 unsigned long lastUpdateMs() { return s_last_update_ms; }
 
+bool fetchInProgress() { return s_fetch_active; }
+
 size_t snapshotAircraft(Aircraft* out, size_t max_out,
                         unsigned long* out_last_update_ms) {
   if (s_mutex != nullptr) {
@@ -277,6 +287,7 @@ size_t snapshotAircraft(Aircraft* out, size_t max_out,
 }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+  const FetchInProgressGuard fetch_guard;
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;

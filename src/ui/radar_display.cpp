@@ -24,6 +24,7 @@ uint16_t kColorBackground = 0x0000;
 uint16_t kColorGrid = 0x0320;
 uint16_t kColorLabel = 0xFFFF;
 uint16_t kColorCenter = 0xFFFF;
+uint16_t kColorFetchDot = 0xF800;
 uint16_t kColorAircraft = 0x001F;
 uint16_t kColorTrackVector = 0xFFFF;
 uint16_t kColorTagType = 0x5DFF;
@@ -216,6 +217,8 @@ void initPalette() {
   // Magenta is R==B, so the swap is a no-op here.
   radar::kColorTrackVector =
       tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
+  radar::kColorFetchDot = panelColor565(radar::kFetchDotR, radar::kFetchDotG,
+                                        radar::kFetchDotB);
   radar::kColorTagType =
       panelColor565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
   radar::kColorTagAltitude =
@@ -679,6 +682,26 @@ void drawCenterDot(int cx, int cy) {
   s_draw->fillSmoothCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
 }
 
+/**
+ * Red dot just right of the "N" cardinal label while an ADS-B fetch is in
+ * flight. It lives in the chrome pass because it reuses the cardinal label
+ * metrics, and the whole frame (chrome included) is recomposed every redraw --
+ * so the dot appears and clears within one frame of the flag changing.
+ */
+void drawFetchIndicator() {
+  if (!services::adsb::fetchInProgress()) {
+    return;
+  }
+  applyCardinalStyle();
+  const int n_half_w = s_draw->textWidth("N") / 2;
+  const int n_h = s_draw->fontHeight();
+  const int x = radar::kCenterX + n_half_w + radar::kFetchDotGapPx +
+                radar::kFetchDotRadiusPx;
+  const int y = radar::kCardinalNorthOffsetY + n_h / 2;
+  s_draw->fillSmoothCircle(x, y, radar::kFetchDotRadiusPx,
+                           radar::kColorFetchDot);
+}
+
 void drawCardinalLabels() {
   const int cx = radar::kCenterX;
   const int cy = radar::kCenterY;
@@ -718,6 +741,7 @@ void drawStaticGrid(Gfx& gfx) {
   runway::drawLargeAirportRunways(gfx);
   drawCenterDot(cx, cy);
   drawCardinalLabels();
+  drawFetchIndicator();
   drawScaleLabel(cx, cy, grid_r);
   gfx.setTextDatum(textdatum_t::top_left);
 }

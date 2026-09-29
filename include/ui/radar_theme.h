@@ -39,6 +39,11 @@ constexpr int kAircraftIconHalfPx = kAircraftIconSizePx / 2;
 constexpr int kAircraftNoseLenPx = kAircraftIconHalfPx;
 /** Tag clearance from the symbol centre; clears the icon at any rotation (px). */
 constexpr int kAircraftSymbolHalfPx = 14;
+
+/** ADS-B fetch in progress: red dot beside the "N" cardinal label. */
+constexpr int kFetchDotRadiusPx = 3;
+/** Gap between the "N" glyph and the dot (px). */
+constexpr int kFetchDotGapPx = 3;
 /** Track vector: ground distance covered in this many seconds at current gs. */
 constexpr float kAircraftTrackHorizonSec = 60.0f;
 /** Minimum visible vector when gs > 0 (px). */
@@ -86,6 +91,9 @@ constexpr uint8_t kTagTypeB = 255;
 constexpr uint8_t kTagAltR = 90;
 constexpr uint8_t kTagAltG = 200;
 constexpr uint8_t kTagAltB = 255;
+constexpr uint8_t kFetchDotR = 255;
+constexpr uint8_t kFetchDotG = 40;
+constexpr uint8_t kFetchDotB = 40;
 constexpr uint8_t kRunwayR = 56;
 constexpr uint8_t kRunwayG = 150;
 constexpr uint8_t kRunwayB = 170;
@@ -98,6 +106,7 @@ extern uint16_t kColorBackground;
 extern uint16_t kColorGrid;
 extern uint16_t kColorLabel;
 extern uint16_t kColorCenter;
+extern uint16_t kColorFetchDot;
 extern uint16_t kColorAircraft;
 extern uint16_t kColorTrackVector;
 extern uint16_t kColorTagType;

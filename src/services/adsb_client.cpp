@@ -386,7 +386,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   body.drain();
   http.end();
   if (err) {
-    if (body.framingError()) {
+    if (fetchShouldStop()) {
+      Serial.println("adsb: fetch abandoned (abort or link lost)");
+    } else if (body.framingError()) {
       Serial.println("adsb: malformed chunked body");
     } else if (body.bytesRead() == 0) {
       Serial.println("adsb: empty response");

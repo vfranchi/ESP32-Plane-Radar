@@ -813,11 +813,12 @@ void perfReport(uint32_t grid_us, uint32_t air_us, uint32_t push_us) {
   const uint32_t total = s_perf_grid_us + s_perf_air_us + s_perf_push_us;
   const uint32_t per = total / s_perf_frames;
   Serial.printf(
-      "perf: grid %u us | air %u us | push %u us | total %u us = %.1f FPS | heap %u\n",
+      "perf: grid %u us | air %u us | push %u us | total %u us = %.1f FPS | heap %u min %u\n",
       s_perf_grid_us / s_perf_frames, s_perf_air_us / s_perf_frames,
       s_perf_push_us / s_perf_frames, per,
       per ? 1000000.0f / static_cast<float>(per) : 0.0f,
-      static_cast<unsigned>(ESP.getFreeHeap()));
+      static_cast<unsigned>(ESP.getFreeHeap()),
+      static_cast<unsigned>(ESP.getMinFreeHeap()));
   s_perf_frames = s_perf_grid_us = s_perf_air_us = s_perf_push_us = 0;
 }
 

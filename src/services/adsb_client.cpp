@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/http_body_framing.h"
 
 namespace services::adsb {
 
@@ -125,40 +126,140 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
   }
 }
 
+/**
+ * Pumps the socket one byte at a time, in blocks, so every refill can run the network
+ * poll callback. HTTPClient's own body readers (getString/writeToStream) block without
+ * polling, so they cannot be used here -- which also means they cannot de-chunk for us:
+ * the wire image comes out raw and BodyFramer unwraps it.
+ */
+class PollingSocketSource {
+ public:
+  PollingSocketSource(HTTPClient& http, WiFiClient& stream, unsigned long deadline)
+      : http_(&http), stream_(&stream), deadline_(deadline) {}
+
+  /** Next raw byte, or -1 once the socket closes or the deadline passes. */
+  int read() {
+    if (pos_ >= len_ && !refill()) {
+      return -1;
+    }
+    return static_cast<unsigned char>(buffer_[pos_++]);
+  }
+
+ private:
+  bool refill() {
+    pos_ = 0;
+    len_ = 0;
+    while (millis() < deadline_) {
+      pollNetwork();
+      const int available = stream_->available();
+      if (available > 0) {
+        const int to_read = available > static_cast<int>(sizeof(buffer_))
+                                ? static_cast<int>(sizeof(buffer_))
+                                : available;
+        const int read_bytes = stream_->readBytes(buffer_, to_read);
+        if (read_bytes > 0) {
+          len_ = static_cast<size_t>(read_bytes);
+          return true;
+        }
+      }
+      if (!http_->connected() && stream_->available() <= 0) {
+        break;  // server closed and the socket is drained
+      }
+      delay(1);
+    }
+    return false;
+  }
+
+  HTTPClient* http_;
+  WiFiClient* stream_;
+  unsigned long deadline_;
+  char buffer_[512];
+  size_t pos_ = 0;
+  size_t len_ = 0;
+};
+
+using BodyReader = services::http::BodyFramer<PollingSocketSource>;
+
 bool httpGetJson(const String& url, const char* tag, JsonDocument& doc,
                  const JsonDocument& filter) {
-  WiFiClientSecure client;
-  client.setInsecure();
+  // Persistent, and the connection stays alive between polls. The TLS handshake costs
+  // ~1 s of CPU on this chip (measured: 899-1140 ms against 10 ms from a LAN host), so
+  // it must be paid once instead of on every poll. Reuse needs the client to outlive
+  // this call -- a local WiFiClientSecure is destroyed on return, socket and all.
+  // Both must outlive the call. HTTPClient's destructor calls _client->stop() without
+  // consulting _reuse, so a per-call instance tears the session down on return -- which
+  // is what kept sending us back to a fresh ~1 s handshake on every poll.
+  static WiFiClientSecure s_client;
+  static HTTPClient s_http;
+  s_client.setInsecure();
 
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  if (config::kPerfLog) {
+    Serial.printf("perf: socket alive before GET = %d\n",
+                  static_cast<int>(s_client.connected()));
+  }
+
+  if (!s_http.begin(s_client, url)) {
     Serial.printf("%s: http.begin failed\n", tag);
     return false;
   }
 
-  http.useHTTP10(true);
-  http.setTimeout(kRequestTimeoutMs);
-  http.setConnectTimeout(kConnectTimeoutMs);
+  // HTTP/1.1 + keep-alive. The CDN then answers chunked, which BodyFramer strips below;
+  // HTTPClient only records that header if asked up front, as _transferEncoding is
+  // private. Dropping HTTP/1.0 also re-enables keep-alive on the request line.
+  s_http.setReuse(true);
+  static const char* kWantedHeaders[] = {"Transfer-Encoding"};
+  s_http.collectHeaders(kWantedHeaders, 1);
+  s_http.setTimeout(kRequestTimeoutMs);
+  s_http.setConnectTimeout(kConnectTimeoutMs);
 
+  const unsigned long t_get = millis();
   int code = 0;
   for (int attempt = 0; attempt < kConnectAttempts; ++attempt) {
     pollNetwork();
-    code = http.GET();
+    code = s_http.GET();
     if (code > 0) {
       break;
     }
   }
   if (code != HTTP_CODE_OK) {
-    Serial.printf("%s: HTTP %d\n", tag, code);
-    http.end();
+    Serial.printf("%s: HTTP %d after %lu ms\n", tag, code, millis() - t_get);
+    s_http.end();
+    return false;
+  }
+  if (config::kPerfLog) {
+    Serial.printf("perf: GET %lu ms | heap %u\n", millis() - t_get,
+                  static_cast<unsigned>(ESP.getFreeHeap()));
+  }
+
+  WiFiClient* stream = s_http.getStreamPtr();
+  if (stream == nullptr) {
+    Serial.printf("%s: no response stream\n", tag);
+    s_http.end();
     return false;
   }
 
-  const DeserializationError err = deserializeJson(
-      doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
+  const services::http::BodyFraming framing =
+      s_http.header("Transfer-Encoding").equalsIgnoreCase("chunked")
+          ? services::http::BodyFraming::kChunked
+          : services::http::BodyFraming::kIdentity;
+
+  PollingSocketSource source(s_http, *stream, millis() + kRequestTimeoutMs);
+  BodyReader body(source, framing, s_http.getSize());
+  const DeserializationError err =
+      deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  // Consume the terminating chunk the parser stopped short of, so the socket sits at
+  // the end of the message and the next GET can reuse the connection.
+  body.drain();
+  s_http.end();
+
   if (err) {
-    Serial.printf("%s: JSON parse error: %s\n", tag, err.c_str());
+    if (body.framingError()) {
+      Serial.printf("%s: malformed chunked body\n", tag);
+    } else if (body.bytesRead() == 0) {
+      Serial.printf("%s: empty response\n", tag);
+    } else {
+      Serial.printf("%s: JSON parse error: %s\n", tag, err.c_str());
+    }
     return false;
   }
   return true;

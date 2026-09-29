@@ -134,8 +134,8 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
  */
 class PollingSocketSource {
  public:
-  PollingSocketSource(HTTPClient& http, WiFiClient& stream, unsigned long deadline)
-      : http_(&http), stream_(&stream), deadline_(deadline) {}
+  PollingSocketSource(HTTPClient& http, WiFiClient& stream, unsigned long timeout_ms)
+      : http_(&http), stream_(&stream), start_(millis()), timeout_ms_(timeout_ms) {}
 
   /** Next raw byte, or -1 once the socket closes or the deadline passes. */
   int read() {
@@ -149,7 +149,9 @@ class PollingSocketSource {
   bool refill() {
     pos_ = 0;
     len_ = 0;
-    while (millis() < deadline_) {
+    // Wrap-safe: millis() - start survives the ~49-day rollover, an absolute
+    // `millis() < deadline` comparison does not.
+    while (millis() - start_ < timeout_ms_) {
       pollNetwork();
       const int available = stream_->available();
       if (available > 0) {
@@ -172,7 +174,8 @@ class PollingSocketSource {
 
   HTTPClient* http_;
   WiFiClient* stream_;
-  unsigned long deadline_;
+  unsigned long start_;
+  unsigned long timeout_ms_;
   char buffer_[512];
   size_t pos_ = 0;
   size_t len_ = 0;
@@ -243,7 +246,7 @@ bool httpGetJson(const String& url, const char* tag, JsonDocument& doc,
           ? services::http::BodyFraming::kChunked
           : services::http::BodyFraming::kIdentity;
 
-  PollingSocketSource source(s_http, *stream, millis() + kRequestTimeoutMs);
+  PollingSocketSource source(s_http, *stream, kRequestTimeoutMs);
   BodyReader body(source, framing, s_http.getSize());
   const DeserializationError err =
       deserializeJson(doc, body, DeserializationOption::Filter(filter));

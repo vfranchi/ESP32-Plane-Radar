@@ -669,23 +669,100 @@ void drawScaleLabel(int cx, int cy, int outer_radius) {
                                scaleLabelAnchorX(cx, outer_radius), cy);
 }
 
+// Sub-phase accumulators for drawStaticGrid, printed by perfBurst().
+uint32_t s_p_setup_us = 0;
+uint32_t s_p_fill_us = 0;
+uint32_t s_p_rings_us = 0;
+uint32_t s_p_cross_us = 0;
+uint32_t s_p_palette_us = 0;
+uint32_t s_p_runway_us = 0;
+uint32_t s_p_dot_us = 0;
+uint32_t s_p_card_us = 0;
+uint32_t s_p_scale_us = 0;
+
+void perfPrintGrid(uint32_t frames) {
+  if (frames == 0) {
+    return;
+  }
+  const uint32_t sum = s_p_setup_us + s_p_fill_us + s_p_rings_us + s_p_cross_us +
+                       s_p_palette_us + s_p_runway_us + s_p_dot_us + s_p_card_us +
+                       s_p_scale_us;
+  Serial.printf(
+      "grid breakdown (avg of %u frames, us): setup %u | fill %u | rings %u | cross %u | "
+      "palette %u | runways %u | dot %u | cardinals %u | scale %u | sum %u\n",
+      frames, s_p_setup_us / frames, s_p_fill_us / frames, s_p_rings_us / frames,
+      s_p_cross_us / frames, s_p_palette_us / frames, s_p_runway_us / frames,
+      s_p_dot_us / frames, s_p_card_us / frames, s_p_scale_us / frames, sum / frames);
+  s_p_setup_us = s_p_fill_us = s_p_rings_us = s_p_cross_us = s_p_palette_us = 0;
+  s_p_runway_us = s_p_dot_us = s_p_card_us = s_p_scale_us = 0;
+}
+
 template <typename Gfx>
 void drawStaticGrid(Gfx& gfx) {
+  uint32_t t = 0;
+  if (config::kPerfLog) {
+    t = micros();
+  }
+
   initLabelMetrics();
   const DrawScope scope(gfx);
   displayFontEnsureLoaded(gfx);
   const int cx = radar::kCenterX;
   const int cy = radar::kCenterY;
   const int grid_r = radar::kGridOuterRadius;
+  if (config::kPerfLog) {
+    s_p_setup_us += micros() - t;
+    t = micros();
+  }
 
   gfx.fillScreen(radar::kColorBackground);
+  if (config::kPerfLog) {
+    s_p_fill_us += micros() - t;
+    t = micros();
+  }
+
   drawRings(cx, cy, grid_r);
+  if (config::kPerfLog) {
+    s_p_rings_us += micros() - t;
+    t = micros();
+  }
+
   drawCrosshairs(cx, cy, grid_r, radar::kColorGrid);
+  if (config::kPerfLog) {
+    s_p_cross_us += micros() - t;
+    t = micros();
+  }
+
   initPalette();
+  if (config::kPerfLog) {
+    s_p_palette_us += micros() - t;
+    t = micros();
+  }
+
   runway::drawLargeAirportRunways(gfx);
+  if (config::kPerfLog) {
+    s_p_runway_us += micros() - t;
+    t = micros();
+  }
+
   drawCenterDot(cx, cy);
+  if (config::kPerfLog) {
+    s_p_dot_us += micros() - t;
+    t = micros();
+  }
+
   drawCardinalLabels();
+  if (config::kPerfLog) {
+    s_p_card_us += micros() - t;
+    t = micros();
+  }
+
   drawScaleLabel(cx, cy, grid_r);
+  if (config::kPerfLog) {
+    s_p_scale_us += micros() - t;
+    t = micros();
+  }
+
   gfx.setTextDatum(textdatum_t::top_left);
 }
 
@@ -702,17 +779,82 @@ bool ensureFrameSprite() {
   return true;
 }
 
+// --- perf instrumentation (dead code when config::kPerfLog is false) ---
+uint32_t s_perf_frames = 0;
+uint32_t s_perf_grid_us = 0;
+uint32_t s_perf_air_us = 0;
+uint32_t s_perf_push_us = 0;
+bool s_perf_burst_done = false;
+
+void perfReport(uint32_t grid_us, uint32_t air_us, uint32_t push_us) {
+  ++s_perf_frames;
+  s_perf_grid_us += grid_us;
+  s_perf_air_us += air_us;
+  s_perf_push_us += push_us;
+  if (s_perf_frames < 10) {
+    return;
+  }
+  const uint32_t total = s_perf_grid_us + s_perf_air_us + s_perf_push_us;
+  const uint32_t per = total / s_perf_frames;
+  Serial.printf(
+      "perf: grid %u us | air %u us | push %u us | total %u us = %.1f FPS | heap %u\n",
+      s_perf_grid_us / s_perf_frames, s_perf_air_us / s_perf_frames,
+      s_perf_push_us / s_perf_frames, per,
+      per ? 1000000.0f / static_cast<float>(per) : 0.0f,
+      static_cast<unsigned>(ESP.getFreeHeap()));
+  s_perf_frames = s_perf_grid_us = s_perf_air_us = s_perf_push_us = 0;
+}
+
 // Double-buffered frame: composite the grid AND aircraft into the off-screen
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 void renderFrame() {
+  uint32_t t0 = 0;
+  uint32_t t1 = 0;
+  uint32_t t2 = 0;
+  if (config::kPerfLog) {
+    t0 = micros();
+  }
+
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
+  if (config::kPerfLog) {
+    t1 = micros();
+  }
+
   {
     const DrawScope scope(s_frame);
     drawAircraft();
   }
+  if (config::kPerfLog) {
+    t2 = micros();
+  }
+
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
+
+  if (config::kPerfLog) {
+    perfReport(t1 - t0, t2 - t1, micros() - t2);
+  }
+}
+
+/** 60 back-to-back frames: the ceiling the pipeline hits with no fetch in the way. */
+void perfBurst() {
+  constexpr int kFrames = 60;
+  const uint32_t start = micros();
+  for (int i = 0; i < kFrames; ++i) {
+    renderFrame();
+  }
+  const uint32_t elapsed = micros() - start;
+  Serial.printf("perf burst: %d frames in %u us -> %.1f ms/frame -> %.1f FPS\n", kFrames,
+                elapsed, elapsed / 1000.0f / static_cast<float>(kFrames),
+                1000000.0f * static_cast<float>(kFrames) / static_cast<float>(elapsed));
+  Serial.printf("perf: heap before probe %u\n", static_cast<unsigned>(ESP.getFreeHeap()));
+  void* probe = malloc(static_cast<size_t>(radar::kSize) * radar::kSize * 2);
+  Serial.printf("perf: 115200-byte alloc %s | heap after %u\n",
+                probe != nullptr ? "OK" : "FAILED",
+                static_cast<unsigned>(ESP.getFreeHeap()));
+  free(probe);
+  perfPrintGrid(static_cast<uint32_t>(kFrames));
 }
 
 }  // namespace
@@ -723,6 +865,10 @@ void radarDisplayDraw() {
 
   if (ensureFrameSprite()) {
     renderFrame();
+    if (config::kPerfLog && !s_perf_burst_done) {
+      s_perf_burst_done = true;
+      perfBurst();
+    }
     return;
   }
 

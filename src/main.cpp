@@ -19,7 +19,6 @@ namespace {
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
-unsigned long g_last_adsb_fetch_ms = 0;
 unsigned long g_last_frame_ms = 0;
 
 void showRadarIfConnected() {
@@ -50,15 +49,15 @@ void handleBootButton() {
   }
 }
 
-void fetchAndDrawAircraft() {
-  const float fetch_km = ui::radar::fetchRadiusKm();
-  if (!services::adsb::fetchUpdate(services::location::lat(),
-                                   services::location::lon(), fetch_km)) {
-    handleBootButton();
-    return;
+void adsbFetchTask(void*) {
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      services::adsb::fetchUpdate(services::location::lat(),
+                                  services::location::lon(),
+                                  ui::radar::fetchRadiusKm());
+    }
+    vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
-  ui::radarDisplayRefreshAircraft();
-  handleBootButton();
 }
 
 }  // namespace
@@ -76,11 +75,15 @@ void setup() {
   }
   services::location::init();
   ui::radar::rangeInit();
-  services::adsb::setPollFn(wifiLoop);
+  // Not setPollFn(wifiLoop) here: the fetch runs on its own task, and the hook would run
+  // the LAN portal's loop() from that task while the main loop is already calling it.
+  // Two tasks inside WebServer/DNSServer hangs the fetch. The main loop drives wifiLoop().
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();
   }
+
+  xTaskCreatePinnedToCore(adsbFetchTask, "adsbFetch", 8192, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
@@ -110,22 +113,12 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
-    } else {
-      // Render before polling: the frame just before a fetch shows the extrapolation
-      // up to that instant, and the fetch then restarts the cycle from ground truth.
+    } else if (millis() - g_last_frame_ms >= config::kFrameIntervalMs) {
+      g_last_frame_ms += config::kFrameIntervalMs;
       if (millis() - g_last_frame_ms >= config::kFrameIntervalMs) {
-        // Advance by one period rather than snapping to now: the render itself takes
-        // ~30 ms, and snapping added that to every period (10 FPS measured as 7.7).
-        g_last_frame_ms += config::kFrameIntervalMs;
-        if (millis() - g_last_frame_ms >= config::kFrameIntervalMs) {
-          g_last_frame_ms = millis();  // resync after a stall, e.g. a blocking fetch
-        }
-        ui::radarDisplayRefreshAircraft();
+        g_last_frame_ms = millis();
       }
-      if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-        g_last_adsb_fetch_ms = millis();
-        fetchAndDrawAircraft();
-      }
+      ui::radarDisplayRefreshAircraft();
     }
   }
 

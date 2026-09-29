@@ -11,6 +11,7 @@
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
+#include "ui/radar_projection.h"
 #include "ui/aircraft_icon_data.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
@@ -226,19 +227,10 @@ void initPalette() {
   initAircraftIconPalette();
 }
 
-constexpr float kKmPerDeg = 111.0f;
-constexpr float kDegToRad = 3.14159265f / 180.0f;
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km) {
-  // Longitude degrees shrink toward the poles; scale by cos(latitude) so
-  // east-west distance isn't overstated away from the equator.
-  const float center_lat_rad =
-      static_cast<float>(services::location::lat()) * kDegToRad;
-  *dx_km = static_cast<float>(lon - services::location::lon()) * kKmPerDeg *
-           cosf(center_lat_rad);
-  *dy_km =
-      static_cast<float>(lat - services::location::lat()) * kKmPerDeg;
+  projection::eastNorthKm(lat, lon, dx_km, dy_km);
   *dist_km = sqrtf((*dx_km) * (*dx_km) + (*dy_km) * (*dy_km));
 }
 
@@ -636,10 +628,12 @@ void drawRings(int cx, int cy, int outer_radius) {
 }
 
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
-  s_draw->drawWideLine(cx, cy - radius, cx, cy + radius,
-                       radar::kGridStrokeHalfWidth, color);
-  s_draw->drawWideLine(cx - radius, cy, cx + radius, cy,
-                       radar::kGridStrokeHalfWidth, color);
+  // fillRect instead of drawWideLine: the wide-line path runs per-pixel float
+  // coverage math, and this chip has no FPU (25.8 ms for two lines).
+  constexpr int kHalf = static_cast<int>(radar::kGridStrokeHalfWidth);
+  constexpr int kThick = kHalf * 2;
+  s_draw->fillRect(cx - kHalf, cy - radius, kThick, radius * 2 + 1, color);
+  s_draw->fillRect(cx - radius, cy - kHalf, radius * 2 + 1, kThick, color);
 }
 
 void drawCenterDot(int cx, int cy) {
@@ -689,10 +683,13 @@ void perfPrintGrid(uint32_t frames) {
                        s_p_scale_us;
   Serial.printf(
       "grid breakdown (avg of %u frames, us): setup %u | fill %u | rings %u | cross %u | "
-      "palette %u | runways %u | dot %u | cardinals %u | scale %u | sum %u\n",
+      "palette %u | runways %u | dot %u | cardinals %u | scale %u | sum %u\n"
+      "  runway work last frame: %u airports in range, %u runway lines drawn\n",
       frames, s_p_setup_us / frames, s_p_fill_us / frames, s_p_rings_us / frames,
       s_p_cross_us / frames, s_p_palette_us / frames, s_p_runway_us / frames,
-      s_p_dot_us / frames, s_p_card_us / frames, s_p_scale_us / frames, sum / frames);
+      s_p_dot_us / frames, s_p_card_us / frames, s_p_scale_us / frames, sum / frames,
+      static_cast<unsigned>(runway::lastAirportCount()),
+      static_cast<unsigned>(runway::lastRunwayDrawCount()));
   s_p_setup_us = s_p_fill_us = s_p_rings_us = s_p_cross_us = s_p_palette_us = 0;
   s_p_runway_us = s_p_dot_us = s_p_card_us = s_p_scale_us = 0;
 }

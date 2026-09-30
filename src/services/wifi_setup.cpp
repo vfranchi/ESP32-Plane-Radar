@@ -90,7 +90,7 @@ WiFiManagerParameter s_param_debug("debug_overlay",
                                    "Debug overlay (fetch dot + Wi-Fi dBm)", "T", 2,
                                    s_debug_checkbox_attrs, WFM_LABEL_AFTER);
 
-void refreshPortalParamDefaults() {
+void refreshPortalParamValues() {
   char lat_buf[kCoordParamLen + 1];
   char lon_buf[kCoordParamLen + 1];
   snprintf(lat_buf, sizeof(lat_buf), "%.6f", services::location::lat());
@@ -116,10 +116,12 @@ void onPortalParamsSaved() {
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveDebugOverlayFromPortal(s_param_debug.getValue());
+
+  refreshPortalParamValues();
 }
 
 void attachPortalParams(WiFiManager& wm) {
-  refreshPortalParamDefaults();
+  refreshPortalParamValues();
   wm.addParameter(&s_param_lat);
   wm.addParameter(&s_param_lon);
   wm.addParameter(&s_param_miles);
@@ -244,7 +246,7 @@ void startLanWebPortal() {
       s_wm.getConfigPortalActive()) {
     return;
   }
-  refreshPortalParamDefaults();
+  refreshPortalParamValues();
   WiFi.mode(WIFI_STA);
   s_wm.setConfigPortalBlocking(false);
 #ifdef WM_MDNS

@@ -89,6 +89,26 @@ void rangeNext() {
   saveRangeIndex();
 }
 
+void rangeSetIndex(uint8_t index) {
+  s_range_index = (index < kRangePresetCount) ? index : kDefaultRangeIndex;
+  saveRangeIndex();
+}
+
+void setUseMiles(bool miles) {
+  s_use_miles = miles;
+  saveUseMiles();
+}
+
+void setShowRunways(bool show) {
+  s_show_runways = show;
+  saveShowRunways();
+}
+
+void setDebugOverlay(bool on) {
+  s_debug_overlay = on;
+  saveDebugOverlay();
+}
+
 const RangePreset& rangeCurrent() { return kRangePresets[s_range_index]; }
 
 uint8_t rangeIndex() { return s_range_index; }

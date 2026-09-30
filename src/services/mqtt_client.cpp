@@ -23,7 +23,7 @@ namespace services::mqtt {
 
 namespace {
 
-enum class State : uint8_t { Disabled, WaitingLink, Connecting, Discovery, Ready, Suspended };
+enum class State : uint8_t { Disabled, WaitingLink, Connecting, Discovery, Ready };
 
 constexpr size_t kNodeIdLen = 48;  // configurable base topic, slashes flattened
 constexpr size_t kBaseTopicLen = 56;
@@ -48,10 +48,6 @@ unsigned long s_last_state_ms = 0;
 unsigned long s_last_connect_ms = 0;
 unsigned long s_discovery_done_ms = 0;
 unsigned long s_last_skip_log_ms = 0;
-// Fetch task asks, loop task hands over: PubSubClient is not safe to touch from
-// two tasks at once, so the socket is only ever closed on the loop task.
-volatile bool s_yield_request = false;
-volatile bool s_yield_ack = false;
 
 // One buffer, allocated at boot and never freed. Both alternatives were
 // measured on the bench board and both cost the ADS-B fetch its TLS handshake:
@@ -257,10 +253,10 @@ bool publishDiscoveryStep() {
 
 void connectBroker() {
   std::snprintf(s_topic, sizeof(s_topic), "%s/status", s_base);
-  // cleanSession=false on purpose: the fetch borrows the socket every cycle
-  // (see releaseForFetch), and with a clean session the broker throws away our
-  // subscription and any QoS 1 command published in that window -- measured as
-  // silently dropped switch taps in Home Assistant.
+  // cleanSession=false on purpose: a dropped link must not cost us the
+  // subscription, and with a clean session the broker throws away any QoS 1
+  // command published while we are away -- measured as silently dropped switch
+  // taps in Home Assistant.
   const bool ok = s_mqtt.connect(s_client_id, s_cfg.user, s_cfg.pass, s_topic, 0,
                                  true, "offline", false);
   if (!ok) {
@@ -269,9 +265,9 @@ void connectBroker() {
   }
   s_mqtt.publish(s_topic, "online", true);
   std::snprintf(s_topic, sizeof(s_topic), "%s/cmd/#", s_base);
-  // QoS 1: the fetch borrows the socket every cycle (see releaseForFetch), and
-  // a QoS 0 command published in that window would be dropped by the broker
-  // instead of waiting for us. PubSubClient acks the inbound QoS 1 publish.
+  // QoS 1: a command published while the link is down must wait in the broker
+  // instead of being dropped, and a QoS 0 one would. PubSubClient acks the
+  // inbound QoS 1 publish.
   s_mqtt.subscribe(s_topic, 1);
   Serial.printf("MQTT: connected to %s:%u as %s (base '%s')\n", s_cfg.host, s_cfg.port,
                 s_client_id, s_base);
@@ -295,17 +291,6 @@ void connectBroker() {
   s_discovery_index = 0;
   s_last_discovery_ms = 0;
   s_state = State::Discovery;
-}
-
-/** Runs on the loop task; see releaseForFetch(). A clean DISCONNECT is
- *  deliberate: the will is not published, so HA keeps the entities available
- *  instead of flapping on every fetch cycle. */
-void yieldToFetchOnLoopTask() {
-  if (s_mqtt.connected()) {
-    s_mqtt.disconnect();
-  }
-  s_state = State::Suspended;
-  s_yield_ack = true;
 }
 
 }  // namespace
@@ -347,17 +332,8 @@ void loop() {
   if (s_state == State::Disabled) {
     return;
   }
-  // The fetch task asked for the socket's heap: hand it over here, on this
-  // task, because PubSubClient is not safe to drive from two tasks at once.
-  if (s_yield_request) {
-    yieldToFetchOnLoopTask();
-    return;
-  }
-  if (s_state == State::Suspended) {
-    return;
-  }
-  // Belt and braces: the fetch's TLS handshake needs one large block and this
-  // board has ~50 KB free, so never take the socket back mid-fetch.
+  // Never drive the client while the fetch is in flight: they share the Wi-Fi
+  // stack, and the fetch's TLS handshake is what needs the heap.
   if (services::adsb::fetchInProgress()) {
     return;
   }
@@ -425,39 +401,6 @@ void loop() {
     s_last_state_ms = millis();
     publishTelemetry();
   }
-}
-
-void releaseForFetch() {
-  if (s_state == State::Disabled) {
-    return;
-  }
-  // Measured, both ways, 120 s each on the bench board: with MQTT connected
-  // the fetch loses mbedtls_ssl_setup (it wants two 16 KB record buffers and
-  // CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH is off on the C3). Handing the
-  // socket back every cycle is the difference between the radar limping and
-  // the radar working, but it does not recover the whole 3 KB MQTT costs.
-  s_yield_ack = false;
-  s_yield_request = true;
-  // Block until the loop task has actually closed the socket: the handshake
-  // needs that memory NOW. Bounded (<=100 ms) so a stalled loop task cannot
-  // wedge the fetch; the loop task runs on the other core, so this delay is
-  // enough for it to notice.
-  for (int i = 0; i < 20 && !s_yield_ack; ++i) {
-    vTaskDelay(pdMS_TO_TICKS(5));
-  }
-  if (!s_yield_ack) {
-    Serial.println("MQTT: fetch yield timed out, handshake may lose the heap");
-  }
-}
-
-void resumeAfterFetch() {
-  s_yield_request = false;
-  if (s_state != State::Suspended) {
-    return;
-  }
-  s_state = State::WaitingLink;
-  // Do not sit out the reconnect backoff: the radar fetches every few seconds.
-  s_last_connect_ms = millis() - config::kMqttReconnectIntervalMs;
 }
 
 }  // namespace services::mqtt

@@ -56,6 +56,10 @@ struct FetchInProgressGuard {
  * give up, or the station dropped its link mid-request -- and a fetch with no
  * link can only burn time getting nowhere.
  */
+/** Whether the poll that just ran found the TLS socket already open. The signal
+ *  that separates "connection reused" from "handshook again" in the serial log. */
+bool s_socket_reused = false;
+
 bool fetchShouldStop() {
   return s_fetch_abort || WiFi.status() != WL_CONNECTED;
 }
@@ -347,14 +351,29 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     f[key] = true;
   }
 
-  WiFiClientSecure client;
+  // Persistent across polls, and the connection stays alive between them. On this
+  // chip the TLS handshake costs ~1 s of CPU (measured: 899-1140 ms on the device
+  // against 10 ms for the same handshake from a LAN host), so it has to be paid
+  // once. Reuse requires BOTH objects to outlive this call: HTTPClient's
+  // destructor calls _client->stop() without consulting _reuse, so a per-call
+  // instance silently tore the session down on return. That is what made
+  // mbedtls_ssl_setup() -- which allocates two 16 KB record buffers, and has no
+  // contiguous block once the MQTT client and the display sprite are up -- run,
+  // and fail, on every single poll.
+  static WiFiClientSecure client;
+  static HTTPClient http;
   client.setInsecure();
 
-  HTTPClient http;
+  const bool socket_alive_before_get = client.connected();
+  s_socket_reused = socket_alive_before_get;
+
   if (!http.begin(client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
+  // Only with this does HTTPClient::disconnect() keep the socket open instead of
+  // calling _client->stop() -- end() above it consults _reuse, the destructor does not.
+  http.setReuse(true);
 
   // HTTPClient only records Transfer-Encoding in the collected headers when
   // it is asked for up front; _transferEncoding itself is private.
@@ -451,9 +470,11 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   // heap/largest block after every fetch: this board runs within a few KB of
   // failing the next TLS handshake, and the number that predicts it is the
   // largest free block, not the free heap.
-  Serial.printf("adsb: %u aircraft heap %u block %u\n", static_cast<unsigned>(n),
+  Serial.printf("adsb: %u aircraft heap %u block %u sock %u\n",
+                static_cast<unsigned>(n),
                 static_cast<unsigned>(ESP.getFreeHeap()),
-                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(s_socket_reused));
   return true;
 }
 

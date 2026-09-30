@@ -103,7 +103,7 @@ constexpr unsigned long kMqttReconnectIntervalMs = 5000UL;
 constexpr size_t kMqttMinFreeHeap = 8000;
 /** Re-publish the retained discovery after this long without one: the radar
  *  reconnects every fetch cycle, and the burst must not run every time. */
-constexpr unsigned long kMqttDiscoveryRefreshMs = 60000UL;
+constexpr unsigned long kMqttDiscoveryRefreshMs = 600000UL;
 /** Advertised in dev.sw. */
 constexpr char kMqttSwVersion[] = "1.1.0-mqtt";
 /** Must match the -DMQTT_MAX_PACKET_SIZE build flag (asserted in mqtt_client.cpp):

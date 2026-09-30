@@ -9,6 +9,7 @@
 #include "hardware/display.h"
 #include "services/adsb_client.h"
 #include "services/fetch_watchdog.h"
+#include "services/mqtt_client.h"
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
 #include "ui/radar_display.h"
@@ -59,9 +60,14 @@ void handleBootButton() {
 void adsbFetchTask(void*) {
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
+      // The TLS handshake allocates one large block and this board has ~50 KB
+      // free: MQTT gives its socket up for the duration, or the handshake fails
+      // with "SSL - Memory allocation failed" in a loop.
+      services::mqtt::releaseForFetch();
       services::adsb::fetchUpdate(services::location::lat(),
                                   services::location::lon(),
                                   ui::radar::fetchRadiusKm());
+      services::mqtt::resumeAfterFetch();
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
@@ -120,6 +126,7 @@ void setup() {
   services::location::init();
   ui::radar::rangeInit();
   services::adsb::init();
+  services::mqtt::init();
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();
@@ -132,8 +139,14 @@ void setup() {
 
 void loop() {
   handleBootButton();
+
+  // 'F' on the serial port dumps the frame sprite (see ui::radarDisplayDumpFrame).
+  if (Serial.available() > 0 && Serial.read() == 'F') {
+    ui::radarDisplayDumpFrame();
+  }
   wifiLoop();
   adsbWatchdog();
+  services::mqtt::loop();
 
   if (WiFi.status() != WL_CONNECTED) {
     if (g_radar_visible) {

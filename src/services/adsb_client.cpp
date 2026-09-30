@@ -470,9 +470,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   // heap/largest block after every fetch: this board runs within a few KB of
   // failing the next TLS handshake, and the number that predicts it is the
   // largest free block, not the free heap.
-  Serial.printf("adsb: %u aircraft heap %u block %u sock %u\n",
+  Serial.printf("adsb: %u aircraft heap %u free of %u, largest block %u, sock %u\n",
                 static_cast<unsigned>(n),
                 static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getHeapSize()),
                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
                 static_cast<unsigned>(s_socket_reused));
   return true;

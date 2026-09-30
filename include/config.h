@@ -95,8 +95,12 @@ constexpr unsigned long kMqttStateIntervalMs = 10000UL;
 constexpr unsigned long kMqttDiscoverySpacingMs = 250UL;
 /** Minimum gap between connect attempts after a failure. */
 constexpr unsigned long kMqttReconnectIntervalMs = 5000UL;
-/** Skip telemetry below this free heap; a TLS handshake needs the room. */
-constexpr size_t kMqttMinFreeHeap = 20000;
+/** Skip telemetry below this free heap. The board runs at ~14 KB once the
+ *  display sprite and WiFi are up, so a high bar here silently froze every
+ *  sensor (measured: telemetry never published again after ~13 KB). Publishing
+ *  a 640 B payload at 14 KB is harmless; the real conflict is a publish racing
+ *  the fetch, which fetchInProgress() already prevents. */
+constexpr size_t kMqttMinFreeHeap = 8000;
 /** Re-publish the retained discovery after this long without one: the radar
  *  reconnects every fetch cycle, and the burst must not run every time. */
 constexpr unsigned long kMqttDiscoveryRefreshMs = 60000UL;

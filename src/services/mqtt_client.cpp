@@ -213,6 +213,10 @@ void handleCommand(char* topic, const char* value) {
     return;
   }
 
+  // Applied commands are worth a line: the only other feedback is the panel,
+  // which is exactly what a remote caller cannot see.
+  Serial.printf("MQTT: cmd %s -> %s\n", topic, value);
+
   // Grid geometry depends on range/units/location: full redraw, same call the
   // BOOT-button path uses. Safe here: loop() is the render task.
   if (WiFi.status() == WL_CONNECTED) {
@@ -253,8 +257,12 @@ bool publishDiscoveryStep() {
 
 void connectBroker() {
   std::snprintf(s_topic, sizeof(s_topic), "%s/status", s_base);
+  // cleanSession=false on purpose: the fetch borrows the socket every cycle
+  // (see releaseForFetch), and with a clean session the broker throws away our
+  // subscription and any QoS 1 command published in that window -- measured as
+  // silently dropped switch taps in Home Assistant.
   const bool ok = s_mqtt.connect(s_client_id, s_cfg.user, s_cfg.pass, s_topic, 0,
-                                 true, "offline");
+                                 true, "offline", false);
   if (!ok) {
     Serial.printf("MQTT: connect failed, rc=%d\n", s_mqtt.state());
     return;
@@ -421,6 +429,11 @@ void releaseForFetch() {
   if (s_state == State::Disabled) {
     return;
   }
+  // Measured, both ways, 120 s each on the bench board: with MQTT connected
+  // the fetch loses mbedtls_ssl_setup (it wants two 16 KB record buffers and
+  // CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH is off on the C3). Handing the
+  // socket back every cycle is the difference between the radar limping and
+  // the radar working, but it does not recover the whole 3 KB MQTT costs.
   s_yield_ack = false;
   s_yield_request = true;
   // Block until the loop task has actually closed the socket: the handshake

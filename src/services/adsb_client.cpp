@@ -1,4 +1,6 @@
 #include "services/adsb_client.h"
+
+#include <esp_heap_caps.h>
 #include "services/nearest_aircraft.h"
 
 #include <HTTPClient.h>
@@ -446,7 +448,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   publish(parsed, n, center_lat, center_lon);
-  Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  // heap/largest block after every fetch: this board runs within a few KB of
+  // failing the next TLS handshake, and the number that predicts it is the
+  // largest free block, not the free heap.
+  Serial.printf("adsb: %u aircraft heap %u block %u\n", static_cast<unsigned>(n),
+                static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   return true;
 }
 

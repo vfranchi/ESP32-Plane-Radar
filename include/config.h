@@ -50,6 +50,22 @@ constexpr double kDefaultRadarLon = 4.9041;
 
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 5000;
+/**
+ * Hard ceiling for one fetch (ms). Each network step has its own timeout, but a
+ * weak or dropped link can park a socket read past all of them and leave the
+ * fetch in flight forever -- the display then sits on "fetching" until the
+ * board is rebooted by hand. Past this the fetch is asked to give up; the
+ * ladder lives in services/fetch_watchdog.h.
+ */
+constexpr unsigned long kAdsbFetchMasterTimeoutMs = 15000UL;
+/**
+ * Time the fetch gets to honour that abort before the board is restarted (ms).
+ * A fetch wedged inside a socket syscall never checks the flag, and killing the
+ * task from outside is unsafe -- it may hold the heap lock, the NVS lock or the
+ * aircraft mutex -- so the last resort is a restart. nvs keeps WiFi, location
+ * and range, so the radar comes back configured.
+ */
+constexpr unsigned long kAdsbFetchAbortGraceMs = 5000UL;
 /** Redraw cadence; aircraft are dead-reckoned along their track/speed so motion
  *  is smooth. ~4 Hz = 250 ms (panel scanout caps at ~24 Hz; the full-frame
  *  recompose+present is the practical limit ~10-15 Hz). */

@@ -43,6 +43,23 @@ const Aircraft* aircraftList();
  */
 unsigned long lastUpdateMs();
 
+/**
+ * True while a fetch is in flight. Set on entry to fetchUpdate() and cleared on
+ * every exit path, so a render loop on another task can show the activity dot.
+ * A plain volatile bool is enough: the flag is advisory, so a stale read only
+ * costs one frame.
+ */
+bool fetchInProgress();
+
+/** Milliseconds the in-flight fetch has been running; 0 when idle. */
+unsigned long fetchElapsedMs();
+
+/**
+ * Ask the in-flight fetch to give up; it returns false at its next wait point
+ * and the next poll starts clean. Driven by the master timeout watchdog.
+ */
+void requestFetchAbort();
+
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();
 void setPollFn(PollFn fn);

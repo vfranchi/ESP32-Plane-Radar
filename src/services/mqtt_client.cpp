@@ -23,7 +23,7 @@ namespace services::mqtt {
 
 namespace {
 
-enum class State : uint8_t { Disabled, WaitingLink, Connecting, Discovery, Ready };
+enum class State : uint8_t { Disabled, WaitingLink, Connecting, Discovery, Ready, Suspended };
 
 constexpr size_t kNodeIdLen = 48;  // configurable base topic, slashes flattened
 constexpr size_t kBaseTopicLen = 56;
@@ -46,41 +46,21 @@ size_t s_discovery_index = 0;
 unsigned long s_last_discovery_ms = 0;
 unsigned long s_last_state_ms = 0;
 unsigned long s_last_connect_ms = 0;
+unsigned long s_discovery_done_ms = 0;
+unsigned long s_last_skip_log_ms = 0;
+// Fetch task asks, loop task hands over: PubSubClient is not safe to touch from
+// two tasks at once, so the socket is only ever closed on the loop task.
+volatile bool s_yield_request = false;
+volatile bool s_yield_ack = false;
 
-// Nothing big lives in .bss: holding the 3.3 KB aircraft snapshot plus a payload
-// buffer permanently is enough to push the ADS-B TLS handshake over the edge
-// ("SSL - Memory allocation failed" in a loop, measured on the bench board).
-// They are malloc'd for the publish and released on the way out, so the fetch
-// task keeps the heap it needs.
-adsb::Aircraft* s_snapshot = nullptr;
-char* s_payload = nullptr;
-
-bool ensurePublishBuffers() {
-  if (s_snapshot == nullptr) {
-    s_snapshot = static_cast<adsb::Aircraft*>(
-        std::malloc(sizeof(adsb::Aircraft) * adsb::kMaxAircraft));
-  }
-  if (s_payload == nullptr) {
-    s_payload = static_cast<char*>(std::malloc(kPayloadMax));
-  }
-  return s_snapshot != nullptr && s_payload != nullptr;
-}
-
-void releasePublishBuffers() {
-  std::free(s_snapshot);
-  s_snapshot = nullptr;
-  std::free(s_payload);
-  s_payload = nullptr;
-}
-
-/** Allocates around the publish and returns the memory on every exit path. */
-struct PublishBuffers {
-  const bool ok;
-  PublishBuffers() : ok(ensurePublishBuffers()) {}
-  ~PublishBuffers() { releasePublishBuffers(); }
-  PublishBuffers(const PublishBuffers&) = delete;
-  PublishBuffers& operator=(const PublishBuffers&) = delete;
-};
+// One buffer, allocated at boot and never freed. Both alternatives were
+// measured on the bench board and both cost the ADS-B fetch its TLS handshake:
+// a 3.3 KB aircraft snapshot held in .bss permanently (fixed 4.7 KB deficit),
+// and the same snapshot malloc'd per publish (no fixed cost, but the
+// malloc/free churn fragmented the heap so badly that the handshake lost its
+// block ~50 s in). The fetch task caches the nearest aircraft instead, so
+// nothing here needs the snapshot at all.
+char s_payload[kPayloadMax];
 
 void buildTopics() {
   const uint32_t mac6 = static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFF);
@@ -143,13 +123,17 @@ void publishLocationState() {
   publishStateTopic("lon", buf, false);
 }
 
-void publishTelemetry() {
-  PublishBuffers buffers;
-  if (!buffers.ok) {
-    Serial.println("MQTT: no heap for the publish buffers, telemetry skipped");
-    return;
-  }
+/** Every controllable/reported value once, so HA holds real states instead of
+ *  'unknown' before the first command. */
+void publishAllStates() {
+  publishRangeState();
+  publishSwitchState("miles", ui::radar::useMiles());
+  publishSwitchState("runways", ui::radar::showRunways());
+  publishSwitchState("debug", ui::radar::debugOverlay());
+  publishLocationState();
+}
 
+void publishTelemetry() {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%u",
                 static_cast<unsigned>(adsb::aircraftCount()));
@@ -161,9 +145,9 @@ void publishTelemetry() {
                 static_cast<unsigned>(ESP.getFreeHeap()));
   publishStateTopic("heap", buf, false);
 
-  const size_t n = adsb::snapshotAircraft(s_snapshot, adsb::kMaxAircraft, nullptr);
-  const adsb::NearestAircraft nearest = adsb::findNearest(
-      s_snapshot, n, services::location::lat(), services::location::lon());
+  // Cached by the fetch task while it held the parsed list: no allocation, and
+  // no torn read of the whole aircraft list.
+  const adsb::NearestAircraft nearest = adsb::nearest();
   if (nearestPayload(nearest, s_payload, kPayloadMax) > 0) {
     std::snprintf(s_topic, sizeof(s_topic), "%s/state/nearest", s_base);
     if (!s_mqtt.publish(s_topic, s_payload, false)) {
@@ -247,26 +231,24 @@ void onMessage(char* topic, uint8_t* payload, unsigned int length) {
   handleCommand(topic, value);
 }
 
-void publishDiscoveryStep() {
-  PublishBuffers buffers;
-  if (!buffers.ok) {
-    Serial.println("MQTT: no heap for the publish buffers, discovery held back");
-    return;
-  }
+/** Publishes one entity's discovery. False means "try me again later": the
+ *  caller must NOT advance the index, or that entity is missing until reboot. */
+bool publishDiscoveryStep() {
   const auto entity = static_cast<Entity>(s_discovery_index);
   if (discoveryTopic(entity, s_ctx, s_topic, sizeof(s_topic)) == 0) {
-    return;
+    return false;
   }
   const size_t n = discoveryPayload(entity, s_ctx, s_payload, kPayloadMax);
   if (n == 0) {
     Serial.printf("MQTT: discovery payload %u too large\n",
                   static_cast<unsigned>(s_discovery_index));
-    return;
+    return false;
   }
   const bool ok = s_mqtt.publish(s_topic, s_payload, true);  // retained
   Serial.printf("MQTT: discovery %u/%u %s\n",
                 static_cast<unsigned>(s_discovery_index + 1),
                 static_cast<unsigned>(Entity::Count), ok ? "ok" : "FAILED");
+  return ok;
 }
 
 void connectBroker() {
@@ -279,12 +261,41 @@ void connectBroker() {
   }
   s_mqtt.publish(s_topic, "online", true);
   std::snprintf(s_topic, sizeof(s_topic), "%s/cmd/#", s_base);
-  s_mqtt.subscribe(s_topic);
+  // QoS 1: the fetch borrows the socket every cycle (see releaseForFetch), and
+  // a QoS 0 command published in that window would be dropped by the broker
+  // instead of waiting for us. PubSubClient acks the inbound QoS 1 publish.
+  s_mqtt.subscribe(s_topic, 1);
   Serial.printf("MQTT: connected to %s:%u as %s (base '%s')\n", s_cfg.host, s_cfg.port,
                 s_client_id, s_base);
+
+  // Reconnecting after the fetch borrowed the socket must not replay the
+  // discovery burst: it is retained in the broker and HA already has the
+  // entities. Refreshing once a minute is cheap insurance against a broker
+  // that restarted and lost the retained topics.
+  const bool discovery_fresh =
+      s_discovery_done_ms != 0 &&
+      (millis() - s_discovery_done_ms) < config::kMqttDiscoveryRefreshMs;
+  if (discovery_fresh) {
+    publishAllStates();
+    s_last_state_ms = millis();
+    s_state = State::Ready;
+    Serial.println("MQTT: reconnected (discovery still retained)");
+    return;
+  }
   s_discovery_index = 0;
   s_last_discovery_ms = 0;
   s_state = State::Discovery;
+}
+
+/** Runs on the loop task; see releaseForFetch(). A clean DISCONNECT is
+ *  deliberate: the will is not published, so HA keeps the entities available
+ *  instead of flapping on every fetch cycle. */
+void yieldToFetchOnLoopTask() {
+  if (s_mqtt.connected()) {
+    s_mqtt.disconnect();
+  }
+  s_state = State::Suspended;
+  s_yield_ack = true;
 }
 
 }  // namespace
@@ -326,6 +337,20 @@ void loop() {
   if (s_state == State::Disabled) {
     return;
   }
+  // The fetch task asked for the socket's heap: hand it over here, on this
+  // task, because PubSubClient is not safe to drive from two tasks at once.
+  if (s_yield_request) {
+    yieldToFetchOnLoopTask();
+    return;
+  }
+  if (s_state == State::Suspended) {
+    return;
+  }
+  // Belt and braces: the fetch's TLS handshake needs one large block and this
+  // board has ~50 KB free, so never take the socket back mid-fetch.
+  if (services::adsb::fetchInProgress()) {
+    return;
+  }
 
   if (WiFi.status() != WL_CONNECTED) {
     if (s_mqtt.connected()) {
@@ -360,33 +385,64 @@ void loop() {
     }
     s_last_discovery_ms = millis();
     if (s_discovery_index < static_cast<size_t>(Entity::Count)) {
-      publishDiscoveryStep();
-      ++s_discovery_index;
+      // A step that could not allocate its buffers must not consume its index:
+      // advancing would leave that entity unpublished until the next boot.
+      if (publishDiscoveryStep()) {
+        ++s_discovery_index;
+      }
       return;
     }
-    // Discovery done: publish every controllable/reported value once, so HA
-    // has real states before the first command.
-    publishRangeState();
-    publishSwitchState("miles", ui::radar::useMiles());
-    publishSwitchState("runways", ui::radar::showRunways());
-    publishSwitchState("debug", ui::radar::debugOverlay());
-    publishLocationState();
+    publishAllStates();
     s_last_state_ms = millis();
+    s_discovery_done_ms = millis();
     s_state = State::Ready;
     Serial.println("MQTT: discovery complete");
     return;
   }
 
   if (millis() - s_last_state_ms >= config::kMqttStateIntervalMs) {
-    s_last_state_ms = millis();
-    if (services::adsb::fetchInProgress() || ESP.getFreeHeap() < config::kMqttMinFreeHeap) {
-      // A publish burst here would race the TLS handshake for the heap.
-      Serial.printf("MQTT: telemetry skipped, heap %u\n",
-                    static_cast<unsigned>(ESP.getFreeHeap()));
+    if (ESP.getFreeHeap() < config::kMqttMinFreeHeap) {
+      // A publish burst here would race the TLS handshake for the heap. Do not
+      // start the interval again: MQTT is only up part of each fetch cycle, so
+      // retry on the next pass (the log stays rate-limited).
+      if (millis() - s_last_skip_log_ms >= config::kMqttStateIntervalMs) {
+        s_last_skip_log_ms = millis();
+        Serial.printf("MQTT: telemetry skipped, heap %u\n",
+                      static_cast<unsigned>(ESP.getFreeHeap()));
+      }
       return;
     }
+    s_last_state_ms = millis();
     publishTelemetry();
   }
+}
+
+void releaseForFetch() {
+  if (s_state == State::Disabled) {
+    return;
+  }
+  s_yield_ack = false;
+  s_yield_request = true;
+  // Block until the loop task has actually closed the socket: the handshake
+  // needs that memory NOW. Bounded (<=100 ms) so a stalled loop task cannot
+  // wedge the fetch; the loop task runs on the other core, so this delay is
+  // enough for it to notice.
+  for (int i = 0; i < 20 && !s_yield_ack; ++i) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  if (!s_yield_ack) {
+    Serial.println("MQTT: fetch yield timed out, handshake may lose the heap");
+  }
+}
+
+void resumeAfterFetch() {
+  s_yield_request = false;
+  if (s_state != State::Suspended) {
+    return;
+  }
+  s_state = State::WaitingLink;
+  // Do not sit out the reconnect backoff: the radar fetches every few seconds.
+  s_last_connect_ms = millis() - config::kMqttReconnectIntervalMs;
 }
 
 }  // namespace services::mqtt

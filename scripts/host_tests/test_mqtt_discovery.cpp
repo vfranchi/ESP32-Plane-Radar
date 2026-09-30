@@ -63,6 +63,17 @@ int main() {
     CHECK(std::strstr(topic, "/planeradar_a1b2c3/") != nullptr);
   }
 
+  // HA validates the number schema and DROPS the entity when step < 0.001
+  // ("Error 'value must be at least 0.001 at 'step''"), so this is a hard
+  // floor -- the two number entities silently vanish otherwise.
+  const Entity kNumbers[] = {Entity::Latitude, Entity::Longitude};
+  for (const auto e : kNumbers) {
+    const size_t n = services::mqtt::discoveryPayload(e, kCtx, payload, sizeof(payload));
+    CHECK(n > 0);
+    CHECK(std::strstr(payload, "\"step\":0.001,") != nullptr);
+    CHECK(std::strstr(payload, "0.000001") == nullptr);
+  }
+
   // Buffer too small must report 0 rather than truncate silently.
   CHECK(services::mqtt::discoveryPayload(Entity::Range, kCtx, payload, 16) == 0);
 

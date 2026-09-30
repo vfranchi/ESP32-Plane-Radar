@@ -60,9 +60,14 @@ void handleBootButton() {
 void adsbFetchTask(void*) {
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
+      // The TLS handshake allocates one large block and this board has ~50 KB
+      // free: MQTT gives its socket up for the duration, or the handshake fails
+      // with "SSL - Memory allocation failed" in a loop.
+      services::mqtt::releaseForFetch();
       services::adsb::fetchUpdate(services::location::lat(),
                                   services::location::lon(),
                                   ui::radar::fetchRadiusKm());
+      services::mqtt::resumeAfterFetch();
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }

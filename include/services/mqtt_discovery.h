@@ -135,11 +135,14 @@ inline void addEntityData(Writer& w, Entity e) {
       w.add("\"ic\":\"mdi:bug\",\"ent_cat\":\"config\"");
       break;
     case Entity::Latitude:
-      w.add("\"min\":-90,\"max\":90,\"step\":0.000001,\"mode\":\"box\","
+      // HA rejects anything below 0.001 ("value must be at least 0.001 at
+      // 'step'") and drops the whole entity, so this is the floor, not a
+      // preference: 0.001 deg ~ 111 m, which is finer than the ring scale.
+      w.add("\"min\":-90,\"max\":90,\"step\":0.001,\"mode\":\"box\","
             "\"ic\":\"mdi:latitude\",\"ent_cat\":\"config\"");
       break;
     case Entity::Longitude:
-      w.add("\"min\":-180,\"max\":180,\"step\":0.000001,\"mode\":\"box\","
+      w.add("\"min\":-180,\"max\":180,\"step\":0.001,\"mode\":\"box\","
             "\"ic\":\"mdi:longitude\",\"ent_cat\":\"config\"");
       break;
     case Entity::AircraftCount:

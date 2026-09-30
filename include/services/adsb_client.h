@@ -22,6 +22,8 @@ struct Aircraft {
 
 constexpr size_t kMaxAircraft = 64;
 
+struct NearestAircraft;
+
 /** Create the internal lock. Call once before any fetch/snapshot. */
 void init();
 
@@ -35,6 +37,14 @@ size_t snapshotAircraft(Aircraft* out, size_t max_out,
 
 size_t aircraftCount();
 const Aircraft* aircraftList();
+
+/**
+ * Closest aircraft as of the last successful fetch, computed by the fetch task
+ * from the list it had just parsed. Callers (MQTT telemetry) read this instead
+ * of copying the list: the copy cost 3.3 KB of heap per publish and starved the
+ * TLS handshake. valid=false before the first fetch.
+ */
+const NearestAircraft& nearest();
 
 /**
  * millis() timestamp of the last successful fetch (0 before the first). The

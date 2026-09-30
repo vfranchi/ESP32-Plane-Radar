@@ -56,6 +56,9 @@ int s_scale_label_h = 0;
 
 lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
+
+/** Bytes of sprite buffer per line in the serial frame dump. */
+constexpr uint32_t kDumpRecordBytes = 64;
 bool s_frame_ready = false;
 
 class DrawScope {
@@ -824,6 +827,34 @@ void renderFrame() {
 }
 
 }  // namespace
+
+void radarDisplayDumpFrame() {
+  const uint8_t* buf = static_cast<const uint8_t*>(s_frame.getBuffer());
+  const uint32_t n = s_frame.bufferLength();
+  if (buf == nullptr || n == 0) {
+    Serial.println("DUMP none");
+    return;
+  }
+  // Indexed 64-byte records: other tasks keep printing while this runs, and a
+  // lost or merged line then costs one record instead of the whole frame.
+  Serial.printf("FRAME %u %u %u\n", static_cast<unsigned>(radar::kSize),
+                static_cast<unsigned>(radar::kSize), static_cast<unsigned>(n));
+  for (uint32_t off = 0; off < n; off += kDumpRecordBytes) {
+    const uint32_t len =
+        (n - off) < kDumpRecordBytes ? (n - off) : kDumpRecordBytes;
+    // Fixed-width 8-digit offset: %04x does NOT truncate, so past 64 KB the
+    // prefix grew a digit and every record collided with a low offset.
+    char line[12 + kDumpRecordBytes * 2 + 2];
+    int p = std::snprintf(line, sizeof(line), "%08x:", static_cast<unsigned>(off));
+    for (uint32_t i = 0; i < len; ++i) {
+      p += std::snprintf(line + p, sizeof(line) - p, "%02x", buf[off + i]);
+    }
+    line[p++] = '\n';
+    line[p] = '\0';
+    Serial.write(reinterpret_cast<const uint8_t*>(line), p);
+  }
+  Serial.println("FRAME END");
+}
 
 void radarDisplayDraw() {
   initPalette();

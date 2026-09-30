@@ -139,6 +139,11 @@ void setup() {
 
 void loop() {
   handleBootButton();
+
+  // 'F' on the serial port dumps the frame sprite (see ui::radarDisplayDumpFrame).
+  if (Serial.available() > 0 && Serial.read() == 'F') {
+    ui::radarDisplayDumpFrame();
+  }
   wifiLoop();
   adsbWatchdog();
   services::mqtt::loop();

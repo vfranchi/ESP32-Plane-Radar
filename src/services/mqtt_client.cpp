@@ -285,7 +285,9 @@ void connectBroker() {
       (millis() - s_discovery_done_ms) < config::kMqttDiscoveryRefreshMs;
   if (discovery_fresh) {
     publishAllStates();
-    s_last_state_ms = millis();
+    // Deliberately NOT resetting s_last_state_ms here: the fetch reconnects every
+    // few seconds, so touching it each time meant the telemetry interval never
+    // elapsed and every sensor silently froze at its last value.
     s_state = State::Ready;
     Serial.println("MQTT: reconnected (discovery still retained)");
     return;

@@ -784,11 +784,26 @@ bool ensureFrameSprite() {
   if (s_frame_ready) {
     return true;
   }
-  s_frame.setColorDepth(16);
+  // 8bpp (RGB332) instead of 16bpp. The frame sprite is the single biggest
+  // allocation on the board (240*240*2 = 115 KB against 57.6 KB), and the ADS-B
+  // TLS handshake wants two 16 KB record buffers that no longer have a
+  // contiguous block once the sprite is up -- which is what killed the fetch
+  // whenever the MQTT client was enabled. RGB332 is a real colour reduction
+  // (not a palette index: palette sprites here convert as `colour & 0xFF`),
+  // and the radar UI is flat theme colours plus text.
+  // NOTE: deliberate 8 here, not 16 -- see the comment above.
+  s_frame.setColorDepth(8);
+  const uint32_t heap_before = ESP.getFreeHeap();
   if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
     Serial.println("radar: frame sprite alloc failed");
     return false;
   }
+  Serial.printf("radar: frame sprite %ux%u depth 8 = %u B, heap %u -> %u\n",
+                static_cast<unsigned>(radar::kSize),
+                static_cast<unsigned>(radar::kSize),
+                static_cast<unsigned>(s_frame.bufferLength()),
+                static_cast<unsigned>(heap_before),
+                static_cast<unsigned>(ESP.getFreeHeap()));
   s_frame_ready = true;
   return true;
 }

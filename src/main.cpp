@@ -60,14 +60,12 @@ void handleBootButton() {
 void adsbFetchTask(void*) {
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
-      // The TLS handshake allocates one large block and this board has ~50 KB
-      // free: MQTT gives its socket up for the duration, or the handshake fails
-      // with "SSL - Memory allocation failed" in a loop.
-      services::mqtt::releaseForFetch();
+      // The MQTT client stays connected across the fetch: halving the frame
+      // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what
+      // the 2x16 KB mbedtls buffers need, so no yield is necessary any more.
       services::adsb::fetchUpdate(services::location::lat(),
                                   services::location::lon(),
                                   ui::radar::fetchRadiusKm());
-      services::mqtt::resumeAfterFetch();
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }

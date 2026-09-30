@@ -59,7 +59,10 @@ unsigned long s_last_skip_log_ms = 0;
 char s_payload[kPayloadMax];
 
 void buildTopics() {
-  const uint32_t mac6 = static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFF);
+  // macSuffix() (not the raw low bits): the low 24 bits of the eFuse MAC are the
+  // OUI, so two boards from one batch would share the base topic and the client
+  // id. See macSuffix() for the measured case.
+  const uint32_t mac6 = macSuffix(ESP.getEfuseMac());
 
   // Base topic: user-configured, else the firmware default.
   if (s_cfg.topic[0] != '\0') {

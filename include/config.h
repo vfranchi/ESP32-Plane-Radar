@@ -81,4 +81,26 @@ constexpr uint16_t kColorYellow = 0xFFE0;
 constexpr uint16_t kTextOnYellow = kColorBlack;
 constexpr uint16_t kTextOnBlack = 0xFFFF;
 
+// --- MQTT / Home Assistant ---
+/** Defaults applied when the matching portal field is left EMPTY. The firmware
+ *  ships no broker address on purpose: host/user/pass are typed by the user in
+ *  the config portal, and an empty host keeps MQTT inert. */
+constexpr uint16_t kMqttDefaultPort = 1883;
+constexpr char kMqttDefaultTopicPrefix[] = "planeradar";
+constexpr char kMqttDefaultDiscoveryPrefix[] = "homeassistant";
+constexpr char kMqttDefaultDeviceName[] = "Plane Radar";
+/** Telemetry cadence once discovery is published. */
+constexpr unsigned long kMqttStateIntervalMs = 10000UL;
+/** Gap between discovery publishes: the socket needs time to drain. */
+constexpr unsigned long kMqttDiscoverySpacingMs = 250UL;
+/** Minimum gap between connect attempts after a failure. */
+constexpr unsigned long kMqttReconnectIntervalMs = 5000UL;
+/** Skip telemetry below this free heap; a TLS handshake needs the room. */
+constexpr size_t kMqttMinFreeHeap = 20000;
+/** Advertised in dev.sw. */
+constexpr char kMqttSwVersion[] = "1.1.0-mqtt";
+/** Must match the -DMQTT_MAX_PACKET_SIZE build flag (asserted in mqtt_client.cpp):
+ *  the ceiling covers topic + payload + header, not the payload alone. */
+constexpr size_t kMqttPacketSize = 768;
+
 }  // namespace config

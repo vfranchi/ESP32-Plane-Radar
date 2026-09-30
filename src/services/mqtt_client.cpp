@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include <cmath>
 #include <cstdio>
@@ -40,16 +41,46 @@ char s_node[kNodeIdLen] = {};
 char s_base[kBaseTopicLen] = {};
 char s_client_id[kClientIdLen] = {};
 char s_topic[128] = {};
-char s_payload[kPayloadMax] = {};
 Ctx s_ctx{};
 size_t s_discovery_index = 0;
 unsigned long s_last_discovery_ms = 0;
 unsigned long s_last_state_ms = 0;
 unsigned long s_last_connect_ms = 0;
 
-// Shared buffer lives in .bss, exactly like radar_display.cpp: 64 aircraft is
-// ~2.6 KB, too much for the loop task stack.
-adsb::Aircraft s_aircraft_snapshot[adsb::kMaxAircraft];
+// Nothing big lives in .bss: holding the 3.3 KB aircraft snapshot plus a payload
+// buffer permanently is enough to push the ADS-B TLS handshake over the edge
+// ("SSL - Memory allocation failed" in a loop, measured on the bench board).
+// They are malloc'd for the publish and released on the way out, so the fetch
+// task keeps the heap it needs.
+adsb::Aircraft* s_snapshot = nullptr;
+char* s_payload = nullptr;
+
+bool ensurePublishBuffers() {
+  if (s_snapshot == nullptr) {
+    s_snapshot = static_cast<adsb::Aircraft*>(
+        std::malloc(sizeof(adsb::Aircraft) * adsb::kMaxAircraft));
+  }
+  if (s_payload == nullptr) {
+    s_payload = static_cast<char*>(std::malloc(kPayloadMax));
+  }
+  return s_snapshot != nullptr && s_payload != nullptr;
+}
+
+void releasePublishBuffers() {
+  std::free(s_snapshot);
+  s_snapshot = nullptr;
+  std::free(s_payload);
+  s_payload = nullptr;
+}
+
+/** Allocates around the publish and returns the memory on every exit path. */
+struct PublishBuffers {
+  const bool ok;
+  PublishBuffers() : ok(ensurePublishBuffers()) {}
+  ~PublishBuffers() { releasePublishBuffers(); }
+  PublishBuffers(const PublishBuffers&) = delete;
+  PublishBuffers& operator=(const PublishBuffers&) = delete;
+};
 
 void buildTopics() {
   const uint32_t mac6 = static_cast<uint32_t>(ESP.getEfuseMac() & 0xFFFFFF);
@@ -113,6 +144,12 @@ void publishLocationState() {
 }
 
 void publishTelemetry() {
+  PublishBuffers buffers;
+  if (!buffers.ok) {
+    Serial.println("MQTT: no heap for the publish buffers, telemetry skipped");
+    return;
+  }
+
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%u",
                 static_cast<unsigned>(adsb::aircraftCount()));
@@ -124,11 +161,10 @@ void publishTelemetry() {
                 static_cast<unsigned>(ESP.getFreeHeap()));
   publishStateTopic("heap", buf, false);
 
-  const size_t n = adsb::snapshotAircraft(s_aircraft_snapshot,
-                                          adsb::kMaxAircraft, nullptr);
+  const size_t n = adsb::snapshotAircraft(s_snapshot, adsb::kMaxAircraft, nullptr);
   const adsb::NearestAircraft nearest = adsb::findNearest(
-      s_aircraft_snapshot, n, services::location::lat(), services::location::lon());
-  if (nearestPayload(nearest, s_payload, sizeof(s_payload)) > 0) {
+      s_snapshot, n, services::location::lat(), services::location::lon());
+  if (nearestPayload(nearest, s_payload, kPayloadMax) > 0) {
     std::snprintf(s_topic, sizeof(s_topic), "%s/state/nearest", s_base);
     if (!s_mqtt.publish(s_topic, s_payload, false)) {
       Serial.println("MQTT: nearest publish failed");
@@ -140,7 +176,7 @@ void publishTelemetry() {
   const String ip = WiFi.localIP().toString();
   const String ssid = WiFi.SSID();
   if (infoPayload(ip.c_str(), ssid.c_str(), millis() / 1000UL,
-                  config::kMqttSwVersion, s_payload, sizeof(s_payload)) > 0) {
+                  config::kMqttSwVersion, s_payload, kPayloadMax) > 0) {
     std::snprintf(s_topic, sizeof(s_topic), "%s/state/info", s_base);
     if (!s_mqtt.publish(s_topic, s_payload, false)) {
       Serial.println("MQTT: info publish failed");
@@ -212,11 +248,16 @@ void onMessage(char* topic, uint8_t* payload, unsigned int length) {
 }
 
 void publishDiscoveryStep() {
+  PublishBuffers buffers;
+  if (!buffers.ok) {
+    Serial.println("MQTT: no heap for the publish buffers, discovery held back");
+    return;
+  }
   const auto entity = static_cast<Entity>(s_discovery_index);
   if (discoveryTopic(entity, s_ctx, s_topic, sizeof(s_topic)) == 0) {
     return;
   }
-  const size_t n = discoveryPayload(entity, s_ctx, s_payload, sizeof(s_payload));
+  const size_t n = discoveryPayload(entity, s_ctx, s_payload, kPayloadMax);
   if (n == 0) {
     Serial.printf("MQTT: discovery payload %u too large\n",
                   static_cast<unsigned>(s_discovery_index));
@@ -256,6 +297,12 @@ static_assert(MQTT_MAX_PACKET_SIZE == config::kMqttPacketSize,
 void init() {
   loadConfig(s_cfg);
   buildTopics();
+  // The failure this feature walks closest to is a TLS handshake that cannot
+  // allocate: "free heap" alone hides it, the largest usable block does not.
+  Serial.printf("MQTT: heap %u, largest block %u\n",
+                static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(
+                    heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   if (!s_cfg.enabled) {
     s_state = State::Disabled;
     Serial.println("MQTT: disabled (portal checkbox off)");

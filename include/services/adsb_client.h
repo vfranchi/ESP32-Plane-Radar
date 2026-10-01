@@ -10,6 +10,12 @@ struct Aircraft {
   float lon;
   float nose_deg;
   float track_deg;
+  /**
+   * False when the feed reported no track/heading at all. pickTrackHeading()
+   * then returns a 0-degree default, and dead-reckoning on that default would
+   * fly the aircraft due north, so the caller must not extrapolate.
+   */
+  bool track_valid;
   float gs_knots;
   /** Age of the position fix at fetch time (ms), from the feed's seen_pos.
    *  Added to the elapsed time when dead-reckoning so the drawn position

@@ -13,8 +13,11 @@
 #include "hardware/display.h"
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
+#include "services/dead_reckoning.h"
 #include "services/radar_location.h"
 #include "ui/aircraft_icon_data.h"
+#include "ui/radar_line.h"
+#include "ui/radar_projection.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
@@ -235,45 +238,39 @@ void initPalette() {
   initAircraftIconPalette();
 }
 
-constexpr float kKmPerDeg = 111.0f;
-constexpr float kDegToRad = 3.14159265f / 180.0f;
-
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km) {
-  // Longitude degrees shrink toward the poles; scale by cos(latitude) so
-  // east-west distance isn't overstated away from the equator.
-  const float center_lat_rad =
-      static_cast<float>(services::location::lat()) * kDegToRad;
-  *dx_km = static_cast<float>(lon - services::location::lon()) * kKmPerDeg *
-           cosf(center_lat_rad);
-  *dy_km =
-      static_cast<float>(lat - services::location::lat()) * kKmPerDeg;
+  // Shared with the runway overlay: the cosine of the centre latitude is cached
+  // there, so this no longer costs a cosf() per call on a chip with no FPU.
+  projection::eastNorthKm(lat, lon, dx_km, dy_km);
   *dist_km = sqrtf((*dx_km) * (*dx_km) + (*dy_km) * (*dy_km));
 }
 
 /**
  * Dead-reckon an aircraft's position from its last-fetched fix along its ground
- * track, so it moves smoothly between ADS-B updates. Uses the same flat
- * 1° ≈ 111 km projection as offsetKmFromCenter(), so it round-trips exactly.
+ * track, so it moves smoothly between ADS-B updates. The maths lives in
+ * services/dead_reckoning.h (host-tested) and shares the renderer's projection.
  */
 void extrapolatedLatLon(const services::adsb::Aircraft& plane,
                         unsigned long base_ms, float* lat, float* lon) {
   *lat = plane.lat;
   *lon = plane.lon;
-  if (base_ms == 0 || plane.gs_knots <= 0.0f) {
+  if (base_ms == 0) {
+    return;
+  }
+  // No track from the feed means no direction to fly. Extrapolating on the
+  // 0-degree default would send the aircraft due north between polls.
+  if (!plane.track_valid) {
     return;
   }
   // Elapsed since the fix was measured = time since fetch + the fix's own age.
+  // The module clamps it, so a fetch that never succeeds cannot fly the aircraft
+  // arbitrarily far away.
   const unsigned long elapsed_ms = (millis() - base_ms) + plane.pos_age_ms;
-  const float elapsed_h = static_cast<float>(elapsed_ms) / 3600000.0f;
-  const float dist_km = plane.gs_knots * 1.852f * elapsed_h;  // knots -> km
-  if (dist_km <= 0.0f) {
-    return;
-  }
-  constexpr float kDegToRad = 0.01745329252f;
-  const float rad = plane.track_deg * kDegToRad;  // track: 0 = N, 90 = E
-  *lat = plane.lat + (dist_km * cosf(rad)) / kKmPerDeg;
-  *lon = plane.lon + (dist_km * sinf(rad)) / kKmPerDeg;
+  services::dead_reckoning::extrapolate(
+      plane.lat, plane.lon, plane.track_deg, plane.gs_knots,
+      static_cast<float>(elapsed_ms) / 1000.0f, projection::cosCenterLat(), lat,
+      lon);
 }
 
 float innerRingMaxKm() {
@@ -434,8 +431,11 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
   if (ex == tip_x && ey == tip_y) {
     return;
   }
-  s_draw->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
-                       color);
+  // The track line is long and drawn once per aircraft, so drawWideLine's
+  // per-pixel float coverage math is the wrong primitive here (no FPU on this
+  // chip). Two integer Bresenham passes give the same weight for microseconds.
+  line::drawThick(*s_draw, tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
+                  color);
 }
 
 void applyTagStyle() {
@@ -555,8 +555,16 @@ void drawAircraft() {
   // Snapshot under the adsb lock (the fetch may run on another thread).
   static services::adsb::Aircraft planes[services::adsb::kMaxAircraft];
   unsigned long base_ms = 0;
-  const size_t n = services::adsb::snapshotAircraft(
+  const size_t snapshot_n = services::adsb::snapshotAircraft(
       planes, services::adsb::kMaxAircraft, &base_ms);
+
+  // No successful fetch for a while (dropped link, wedged request, broker gone):
+  // show an empty scope rather than aircraft frozen -- and dead-reckoned -- at
+  // the positions of a poll that may be a minute old.
+  constexpr unsigned long kAircraftStaleAfterMs = 15000;
+  const bool stale =
+      base_ms == 0 || (millis() - base_ms) > kAircraftStaleAfterMs;
+  const size_t n = stale ? 0 : snapshot_n;
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
@@ -677,10 +685,12 @@ void drawRings(int cx, int cy, int outer_radius) {
 }
 
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
-  s_draw->drawWideLine(cx, cy - radius, cx, cy + radius,
-                       radar::kGridStrokeHalfWidth, color);
-  s_draw->drawWideLine(cx - radius, cy, cx + radius, cy,
-                       radar::kGridStrokeHalfWidth, color);
+  // fillRect instead of drawWideLine: the wide-line path runs per-pixel float
+  // coverage math and these two strokes are axis-aligned anyway.
+  constexpr int kHalf = static_cast<int>(radar::kGridStrokeHalfWidth);
+  constexpr int kThick = kHalf * 2;
+  s_draw->fillRect(cx - kHalf, cy - radius, kThick, radius * 2 + 1, color);
+  s_draw->fillRect(cx - radius, cy - kHalf, radius * 2 + 1, kThick, color);
 }
 
 void drawCenterDot(int cx, int cy) {

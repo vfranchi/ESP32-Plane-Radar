@@ -14,6 +14,7 @@
 #include "hardware/display_font.h"
 #include "services/adsb_client.h"
 #include "services/dead_reckoning.h"
+#include "services/flight_follow.h"
 #include "services/radar_location.h"
 #include "ui/aircraft_icon_data.h"
 #include "ui/radar_line.h"
@@ -36,6 +37,7 @@ uint16_t kColorTagType = 0x5DFF;
 uint16_t kColorTagAltitude = 0xFFE0;
 uint16_t kColorRunway = 0x4D5F;
 uint16_t kColorRunwayLabel = 0x7DFF;
+uint16_t kColorTrail = 0x7388;  // the aircraft colour, dimmed; set in initPalette
 
 }  // namespace radar
 
@@ -63,6 +65,17 @@ LGFX_Sprite s_frame(&tft);
 /** Bytes of sprite buffer per line in the serial frame dump. */
 constexpr uint32_t kDumpRecordBytes = 64;
 bool s_frame_ready = false;
+
+/**
+ * Q4 gate for the follow phase: the trail projects up to kTrailMax positions and strokes
+ * up to 63 lines per frame, on a chip with no FPU. If the measured phase stays above
+ * kFollowPhaseBudgetUs, the screen points should be computed once per poll instead of once
+ * per frame. Measured in the shipped build, behind the debug overlay, at most once a
+ * second -- a number taken from a special build would not answer the question.
+ */
+constexpr uint32_t kFollowPhaseBudgetUs = 3000;
+uint32_t s_follow_phase_us = 0;
+unsigned long s_follow_perf_log_ms = 0;
 
 class DrawScope {
  public:
@@ -235,6 +248,9 @@ void initPalette() {
       tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
   radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
                                           radar::kRunwayLabelB);
+  // Same pre-blend the icon palette uses, so the trail belongs to the followed aircraft
+  // without competing with it. panelColor565 because the panel is BGR.
+  radar::kColorTrail = panelColor565(radar::kTrailR, radar::kTrailG, radar::kTrailB);
   initAircraftIconPalette();
 }
 
@@ -525,6 +541,16 @@ struct BeyondDotDrawItem {
   int dist_sq = 0;
 };
 
+/**
+ * The followed aircraft also appears in the area list, but it is drawn from its own slot
+ * and its own base time. Two dead-reckoned copies of one aircraft would sit a few pixels
+ * apart, so the area copy is dropped -- by callsign first, then by position, which is what
+ * covers a target set by Mode-S hex (the feed's callsign field then holds the tail's
+ * callsign, not the hex we searched for).
+ */
+bool isTheFollowedAircraft(const services::adsb::Aircraft& plane,
+                           const services::adsb::Aircraft& followed);
+
 void sortDrawItemsFarFirst(AircraftDrawItem* items, size_t count) {
   for (size_t i = 1; i < count; ++i) {
     const AircraftDrawItem key = items[i];
@@ -571,7 +597,16 @@ void drawAircraft() {
   size_t draw_count = 0;
   size_t dot_count = 0;
 
+  // The followed aircraft is drawn by drawFollowOverlay() from its own slot; the area
+  // copy is dropped so it does not appear twice, a few pixels apart.
+  services::adsb::Aircraft followed{};
+  const bool have_followed =
+      services::follow::target().active && services::adsb::targetSnapshot(&followed);
+
   for (size_t i = 0; i < n; ++i) {
+    if (have_followed && isTheFollowedAircraft(planes[i], followed)) {
+      continue;
+    }
     // Dead-reckoned position for smooth motion between fetches.
     float lat = 0.0f;
     float lon = 0.0f;
@@ -772,6 +807,263 @@ void drawScaleLabel(int cx, int cy, int outer_radius) {
                                scaleLabelAnchorX(cx, outer_radius), cy);
 }
 
+/**
+ * The followed aircraft also appears in the area list, but it is drawn from its own slot
+ * and its own base time. Two dead-reckoned copies of one aircraft would sit a few pixels
+ * apart, so the area copy is dropped -- by callsign first, then by position, which is what
+ * covers a target set by Mode-S hex (the feed's callsign field then holds the tail's
+ * callsign, not the hex we searched for).
+ */
+bool isTheFollowedAircraft(const services::adsb::Aircraft& plane,
+                           const services::adsb::Aircraft& followed) {
+  if (strcmp(plane.callsign, services::follow::target().id) == 0) {
+    return true;
+  }
+  // Both fixes come from the same feed, at most one area poll apart (~15 s, under 4 km
+  // at cruise), so anything inside 5 km of the followed fix is the same aircraft.
+  return services::follow::greatCircleKm(plane.lat, plane.lon, followed.lat,
+                                         followed.lon) < 5.0f;
+}
+
+/**
+ * Recentre the radar on the followed aircraft, with a dead-band: a few pixels of drift are
+ * not worth rebuilding the runway cache and the whole grid, and without it a jittery fix
+ * would move the rings every frame. Runs before the grid is composed, so rings, runways,
+ * labels and the projection all follow.
+ */
+void updateFollowCenter() {
+  if (!services::follow::target().active) {
+    services::location::clearFollowCenter();
+    return;
+  }
+  services::adsb::Aircraft target{};
+  const unsigned long base_ms = services::adsb::targetUpdateMs();
+  if (base_ms == 0 || !services::adsb::targetSnapshot(&target)) {
+    return;  // no fix yet: keep the configured centre
+  }
+
+  float lat = 0.0f;
+  float lon = 0.0f;
+  extrapolatedLatLon(target, base_ms, &lat, &lon);
+
+  int x = 0;
+  int y = 0;
+  latLonToScreen(lat, lon, &x, &y);
+  const int dx = x - radar::kCenterX;
+  const int dy = y - radar::kCenterY;
+  if (dx * dx + dy * dy < radar::kFollowDeadBandPx * radar::kFollowDeadBandPx) {
+    return;
+  }
+  services::location::setFollowCenter(lat, lon);
+}
+
+/** Screen point of one trail sample; false when it falls outside the scope. */
+bool trailPointOnScreen(float lat, float lon, int* x, int* y) {
+  float dx_km = 0.0f;
+  float dy_km = 0.0f;
+  float dist_km = 0.0f;
+  offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
+  if (!isInsideOuterRingKm(dist_km)) {
+    return false;
+  }
+  latLonToScreen(lat, lon, x, y);
+  return true;
+}
+
+/**
+ * The path already flown, oldest sample first. A sample outside the scope breaks the
+ * polyline rather than being clipped onto the rim: the trail is history, and the ring is
+ * not the world.
+ */
+void drawFollowTrail() {
+  const services::follow::Trail& trail = services::follow::trail();
+  if (trail.size() < 2) {
+    return;
+  }
+  int prev_x = 0;
+  int prev_y = 0;
+  bool have_prev = false;
+  for (size_t i = 0; i < trail.size(); ++i) {
+    float lat = 0.0f;
+    float lon = 0.0f;
+    trail.at(i, &lat, &lon);
+    int x = 0;
+    int y = 0;
+    if (!trailPointOnScreen(lat, lon, &x, &y)) {
+      have_prev = false;
+      continue;
+    }
+    if (have_prev) {
+      line::drawThick(*s_draw, prev_x, prev_y, x, y, radar::kFollowTrailHalfWidth,
+                      radar::kColorTrail);
+    }
+    prev_x = x;
+    prev_y = y;
+    have_prev = true;
+  }
+}
+
+/** "1h12" / "42m", rounded to the nearest minute. */
+void formatDuration(unsigned long ms, char* out, size_t out_len) {
+  const unsigned long total_min = (ms + 30000UL) / 60000UL;
+  const unsigned long hours = total_min / 60UL;
+  const unsigned long minutes = total_min % 60UL;
+  if (hours > 0) {
+    snprintf(out, out_len, "%luh%02lu", hours, minutes);
+  } else {
+    snprintf(out, out_len, "%lum", minutes);
+  }
+}
+
+/**
+ * Three-line readout of the followed flight, on an opaque plate over the lower rings.
+ *
+ * No clock time appears here: the firmware has no wall clock (no SNTP, no RTC), so
+ * "landed at 14:32" cannot be printed. Everything shown is a live value or a duration.
+ */
+void drawFollowPanel() {
+  const services::follow::Info& info = services::follow::info();
+  if (info.state == services::follow::State::kIdle) {
+    return;
+  }
+
+  const char* status = "LIVE";
+  switch (info.state) {
+    case services::follow::State::kNotSeen:
+      status = "NOT LIVE";
+      break;
+    case services::follow::State::kGrounded:
+      status = "ON GROUND";
+      break;
+    case services::follow::State::kLanded:
+      status = "LANDED";
+      break;
+    case services::follow::State::kLive:
+    case services::follow::State::kIdle:
+      break;
+  }
+
+  char line1[24];
+  char line2[20] = {};
+  char line3[24] = {};
+  snprintf(line1, sizeof(line1), "%s %s", info.id, status);
+  if (info.route_known) {
+    snprintf(line2, sizeof(line2), "%s > %s", info.origin, info.destination);
+  }
+
+  char duration[12] = {};
+  switch (info.state) {
+    case services::follow::State::kLive: {
+      const float eta_min = services::follow::etaMinutes(info.to_dest_km, info.gs_knots);
+      if (eta_min > 0.0f) {
+        formatDuration(static_cast<unsigned long>(eta_min * 60000.0f), duration,
+                       sizeof(duration));
+        snprintf(line3, sizeof(line3), "%.0fkt eta %s", info.gs_knots, duration);
+      } else {
+        snprintf(line3, sizeof(line3), "%.0fkt", info.gs_knots);
+      }
+      break;
+    }
+    case services::follow::State::kLanded: {
+      const float air_min = services::follow::session().airMinutes();
+      if (air_min > 0.0f) {
+        formatDuration(static_cast<unsigned long>(air_min * 60000.0f), duration,
+                       sizeof(duration));
+        snprintf(line3, sizeof(line3), "block %s", duration);
+      }
+      break;
+    }
+    case services::follow::State::kGrounded:
+      snprintf(line3, sizeof(line3), "%.0fkt", info.gs_knots);
+      break;
+    case services::follow::State::kNotSeen: {
+      // Either not departed yet or out of the feed's sight. The route's own distance
+      // gives the estimated trip time -- labelled "est", because it is one.
+      const float trip_min =
+          info.route_known ? services::follow::estimatedTripMinutes(info.route_km) : 0.0f;
+      if (trip_min > 0.0f) {
+        formatDuration(static_cast<unsigned long>(trip_min * 60000.0f), duration,
+                       sizeof(duration));
+        snprintf(line3, sizeof(line3), "est %s", duration);
+      } else {
+        snprintf(line3, sizeof(line3), "no fix from the feed");
+      }
+      break;
+    }
+    case services::follow::State::kIdle:
+      return;
+  }
+
+  // One line for the text that exists, so an unknown route does not leave a gap.
+  if (line2[0] == '\0') {
+    snprintf(line2, sizeof(line2), "%s", line3);
+    line3[0] = '\0';
+  }
+
+  applyScaleStyle();
+  const int line_h = s_draw->fontHeight();
+  const int gap = radar::kFollowPanelLineGapPx;
+  const int lines = line3[0] != '\0' ? 3 : (line2[0] != '\0' ? 2 : 1);
+
+  int text_w = static_cast<int>(s_draw->textWidth(line1));
+  if (line2[0] != '\0') {
+    text_w = std::max(text_w, static_cast<int>(s_draw->textWidth(line2)));
+  }
+  if (line3[0] != '\0') {
+    text_w = std::max(text_w, static_cast<int>(s_draw->textWidth(line3)));
+  }
+
+  const int block_h = lines * line_h + (lines - 1) * gap;
+  const int left = radar::kCenterX - text_w / 2 - radar::kFollowPanelPadXPx;
+  const int top = radar::kSize - radar::kFollowPanelBottomMarginPx - block_h -
+                  radar::kFollowPanelPadYPx * 2;
+
+  s_draw->fillRect(left, top, text_w + radar::kFollowPanelPadXPx * 2,
+                   block_h + radar::kFollowPanelPadYPx * 2, radar::kColorBackground);
+  s_draw->setTextDatum(textdatum_t::top_center);
+
+  int y = top + radar::kFollowPanelPadYPx;
+  s_draw->setTextColor(radar::kColorAircraft, radar::kColorBackground);
+  s_draw->drawString(line1, radar::kCenterX, y);
+  y += line_h + gap;
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  if (line2[0] != '\0') {
+    s_draw->drawString(line2, radar::kCenterX, y);
+    y += line_h + gap;
+  }
+  if (line3[0] != '\0') {
+    s_draw->drawString(line3, radar::kCenterX, y);
+  }
+}
+
+/**
+ * The followed aircraft, its trail and the readout, drawn over the area traffic. The icon
+ * is the one every aircraft gets; what singles it out is the trail behind it and the ring
+ * around it.
+ */
+void drawFollowOverlay() {
+  if (!services::follow::target().active) {
+    return;
+  }
+  services::adsb::Aircraft target{};
+  const unsigned long base_ms = services::adsb::targetUpdateMs();
+  if (base_ms != 0 && services::adsb::targetSnapshot(&target)) {
+    drawFollowTrail();
+    float lat = 0.0f;
+    float lon = 0.0f;
+    extrapolatedLatLon(target, base_ms, &lat, &lon);
+    int x = 0;
+    int y = 0;
+    latLonToScreen(lat, lon, &x, &y);
+    drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
+                    radar::kColorTrackVector);
+    drawAircraftIcon(x, y, target.nose_deg);
+    s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx, radar::kColorAircraft);
+    drawAircraftTag(x, y, target);
+  }
+  drawFollowPanel();
+}
+
 template <typename Gfx>
 void drawStaticGrid(Gfx& gfx) {
   initLabelMetrics();
@@ -817,15 +1109,35 @@ bool ensureFrameSprite() {
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 void renderFrame() {
+  // Before the grid: the ring, the runways and the projection all key off the centre.
+  updateFollowCenter();
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
     drawAircraft();
+    if (radar::debugOverlay()) {
+      const uint32_t follow_started_us = micros();
+      drawFollowOverlay();
+      s_follow_phase_us = micros() - follow_started_us;
+    } else {
+      drawFollowOverlay();
+    }
     // Last, so the readout plate sits over rings, runway labels and aircraft.
     drawSignalLabel();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
+
+  if (radar::debugOverlay()) {
+    const unsigned long now_ms = millis();
+    if (now_ms - s_follow_perf_log_ms >= 1000UL) {
+      s_follow_perf_log_ms = now_ms;
+      Serial.printf("perf: follow phase %u us (%s), trail %u pts\n",
+                    static_cast<unsigned>(s_follow_phase_us),
+                    s_follow_phase_us > kFollowPhaseBudgetUs ? "over budget" : "ok",
+                    static_cast<unsigned>(services::follow::trail().size()));
+    }
+  }
 }
 
 }  // namespace
@@ -869,8 +1181,10 @@ void radarDisplayDraw() {
 
   // Fallback when the sprite can't be allocated: draw straight to the panel.
   const DrawScope scope(tft);
+  updateFollowCenter();
   drawStaticGrid(tft);
   drawAircraft();
+  drawFollowOverlay();
   drawSignalLabel();
   tft.setTextDatum(textdatum_t::top_left);
 }

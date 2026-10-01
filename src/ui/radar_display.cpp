@@ -67,14 +67,18 @@ constexpr uint32_t kDumpRecordBytes = 64;
 bool s_frame_ready = false;
 
 /**
- * Q4 gate for the follow phase: the trail projects up to kTrailMax positions and strokes
- * up to 63 lines per frame, on a chip with no FPU. If the measured phase stays above
- * kFollowPhaseBudgetUs, the screen points should be computed once per poll instead of once
- * per frame. Measured in the shipped build, behind the debug overlay, at most once a
- * second -- a number taken from a special build would not answer the question.
+ * Q4 gate for the trail: it projects up to kTrailMax positions and strokes up to 63 lines
+ * per frame, on a chip with no FPU. The budget covers the TRAIL only -- the rest of the
+ * follow overlay (panel text, icon, tag) is a fixed cost that does not grow with the
+ * trail, and timing the whole overlay would blame the panel for the trail's number. If
+ * the measured trail stays above kFollowTrailBudgetUs, precompute the screen points once
+ * per poll instead of once per frame. Measured in the shipped build, behind the debug
+ * overlay, at most once a second -- a number from a special build would not answer the
+ * question.
  */
-constexpr uint32_t kFollowPhaseBudgetUs = 3000;
-uint32_t s_follow_phase_us = 0;
+constexpr uint32_t kFollowTrailBudgetUs = 3000;
+uint32_t s_follow_overlay_us = 0;
+uint32_t s_follow_trail_us = 0;
 unsigned long s_follow_perf_log_ms = 0;
 
 class DrawScope {
@@ -878,8 +882,10 @@ bool trailPointOnScreen(float lat, float lon, int* x, int* y) {
 void drawFollowTrail() {
   const services::follow::Trail& trail = services::follow::trail();
   if (trail.size() < 2) {
+    s_follow_trail_us = 0;
     return;
   }
+  const uint32_t started_us = micros();
   int prev_x = 0;
   int prev_y = 0;
   bool have_prev = false;
@@ -901,6 +907,7 @@ void drawFollowTrail() {
     prev_y = y;
     have_prev = true;
   }
+  s_follow_trail_us = micros() - started_us;
 }
 
 /** "1h12" / "42m", rounded to the nearest minute. */
@@ -943,8 +950,10 @@ void drawFollowPanel() {
       break;
   }
 
+  // All three lines share one size: when the route is unknown the detail line is moved up
+  // into line2, and a smaller line2 silently truncated it ("no fix from the fee").
   char line1[24];
-  char line2[20] = {};
+  char line2[24] = {};
   char line3[24] = {};
   snprintf(line1, sizeof(line1), "%s %s", info.id, status);
   if (info.route_known) {
@@ -1118,7 +1127,7 @@ void renderFrame() {
     if (radar::debugOverlay()) {
       const uint32_t follow_started_us = micros();
       drawFollowOverlay();
-      s_follow_phase_us = micros() - follow_started_us;
+      s_follow_overlay_us = micros() - follow_started_us;
     } else {
       drawFollowOverlay();
     }
@@ -1132,9 +1141,10 @@ void renderFrame() {
     const unsigned long now_ms = millis();
     if (now_ms - s_follow_perf_log_ms >= 1000UL) {
       s_follow_perf_log_ms = now_ms;
-      Serial.printf("perf: follow phase %u us (%s), trail %u pts\n",
-                    static_cast<unsigned>(s_follow_phase_us),
-                    s_follow_phase_us > kFollowPhaseBudgetUs ? "over budget" : "ok",
+      Serial.printf("perf: follow overlay %u us, trail %u us (%s), %u pts\n",
+                    static_cast<unsigned>(s_follow_overlay_us),
+                    static_cast<unsigned>(s_follow_trail_us),
+                    s_follow_trail_us > kFollowTrailBudgetUs ? "over budget" : "ok",
                     static_cast<unsigned>(services::follow::trail().size()));
     }
   }

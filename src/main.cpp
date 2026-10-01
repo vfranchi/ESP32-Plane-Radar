@@ -164,13 +164,6 @@ void adsbFetchTask(void*) {
             services::follow::noteRouteFailure();
           }
         }
-
-        if (airborne) {
-          // adsbdb files a route per callsign, so it can name the leg this aircraft is not
-          // flying. Only check while airborne: a taxi heading on the apron says nothing.
-          services::follow::orientRouteToPosition(target.lat, target.lon, target.track_deg,
-                                                  target.track_valid);
-        }
       } else {
         // The MQTT client stays connected across the fetch: halving the frame
         // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what

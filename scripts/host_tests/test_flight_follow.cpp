@@ -23,7 +23,8 @@ using services::follow::kIdLen;
 using services::follow::kTrailMax;
 using services::follow::looksLikeHex;
 using services::follow::normalizeId;
-using services::follow::routeLooksReversed;
+using services::follow::routeTrendSaysClosing;
+using services::follow::routeTrendSaysReversed;
 using services::follow::RouteCache;
 using services::follow::Session;
 using services::follow::State;
@@ -148,15 +149,18 @@ int main() {
   deferred.fail();
   CHECK(!deferred.usableAt(1000 + 2 * kMinute + 2, 0));
 
-  // --- the filed route can be the other leg: the heading decides which end is ahead ---
-  // Live case that exposed this: AZU4269 at -23.7007/-46.3556, track 78 deg, adsbdb said
-  // REC > VCP, but the aircraft was 111 km out of VCP flying away from it.
-  const float vcp_lat = -23.007f, vcp_lon = -47.135f, rec_lat = -8.126f, rec_lon = -34.923f;
-  CHECK(routeLooksReversed(-23.7007f, -46.3556f, 78.13f, rec_lat, rec_lon, vcp_lat, vcp_lon));
-  // Same spot, heading back at VCP: what adsbdb said is then right, so nothing to swap.
-  CHECK(!routeLooksReversed(-23.7007f, -46.3556f, 313.0f, rec_lat, rec_lon, vcp_lat, vcp_lon));
-  // Just off VCP climbing out toward REC, filed VCP > REC: correct as filed.
-  CHECK(!routeLooksReversed(-23.10f, -47.00f, 40.0f, vcp_lat, vcp_lon, rec_lat, rec_lon));
+  // --- the wrong destination is caught by measurement, not by airport names ---
+  // Live case: ITY675 climbing out of GRU for FCO, with a per-callsign lookup that can name
+  // either leg. Toward FCO: the destination closes and the origin opens.
+  CHECK(!routeTrendSaysReversed(9430.0f, 20.0f, 9424.0f, 26.0f));
+  CHECK(routeTrendSaysClosing(9430.0f, 20.0f, 9424.0f, 26.0f));
+  // The same flight with the ends the wrong way round: the airport behind (GRU) "opens"
+  // while the real destination closes -> swap them.
+  CHECK(routeTrendSaysReversed(20.0f, 9430.0f, 26.0f, 9424.0f));
+  CHECK(!routeTrendSaysClosing(20.0f, 9430.0f, 26.0f, 9424.0f));
+  // Position jitter is not progress in either direction.
+  CHECK(!routeTrendSaysReversed(100.0f, 500.0f, 100.1f, 499.9f));
+  CHECK(!routeTrendSaysClosing(100.0f, 500.0f, 100.1f, 499.9f));
 
   RouteCache hex_cache;
   CHECK(!hex_cache.wantedAt(10000, 0, /*target_is_hex=*/true));  // adsbdb resolves callsigns only

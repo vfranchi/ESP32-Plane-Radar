@@ -34,10 +34,12 @@ constexpr unsigned long kRouteRetryMs = 300000UL;
  */
 constexpr unsigned long kRouteDeferMs = 60000UL;
 /**
- * How far off the destination's bearing a heading must be before the filed route is taken to
- * be the reverse leg. 90 leaves a wide margin for a base leg or a hold.
+ * Per-poll movement (km) that counts as real progress rather than position jitter.
+ * At 400 kt an aircraft covers ~1 km per 5 s poll, so this is well inside the signal.
  */
-constexpr float kRouteReverseDeg = 90.0f;
+constexpr float kRouteTrendKm = 0.3f;
+/** Consecutive polls of the same trend before the route ends are swapped (~15 s). */
+constexpr int kRouteTrendPolls = 3;
 
 enum class State {
   kIdle,      // no target configured
@@ -182,51 +184,23 @@ inline float greatCircleKm(float lat1, float lon1, float lat2, float lon2) {
 }
 
 /**
- * Initial bearing from one point to another, degrees clockwise from north.
- * Only ever called when a route is resolved or a heading is checked, so the soft-float
- * sinf/cosf/atan2f cost is paid a handful of times, not per frame.
- */
-inline float bearingDeg(float lat1, float lon1, float lat2, float lon2) {
-  const float kDegToRad = 3.14159265f / 180.0f;
-  const float dlon = (lon2 - lon1) * kDegToRad;
-  const float y = sinf(dlon) * cosf(lat2 * kDegToRad);
-  const float x = cosf(lat1 * kDegToRad) * sinf(lat2 * kDegToRad) -
-                  sinf(lat1 * kDegToRad) * cosf(lat2 * kDegToRad) * cosf(dlon);
-  float deg = atan2f(y, x) / kDegToRad;
-  if (deg < 0.0f) {
-    deg += 360.0f;
-  }
-  return deg;
-}
-
-/** Smallest angle between two headings, 0..180. */
-inline float angleDeltaDeg(float a, float b) {
-  float d = fabsf(a - b);
-  while (d > 180.0f) {
-    d = 360.0f - d;
-  }
-  return d;
-}
-
-/**
- * True when this route is filed the other way round for the leg being flown.
+ * True when two consecutive distance samples say the route's ends are the wrong way round.
  *
- * adsbdb answers per callsign, and an airframe flies the city pair in both directions, so
- * its answer can name the leg the aircraft is not on. The heading tells us which end is
- * ahead: pointing more than `min_off_deg` away from the destination while pointing more
- * nearly at the origin means the two need swapping -- otherwise the panel shows the route
- * backwards and computes an ETA for the airport behind the aircraft.
+ * The physical fact is that a destination's distance has to shrink. A per-callsign API names
+ * the city pair in both directions, so its answer can be the other leg -- and then the stored
+ * destination's distance grows while the airport behind the aircraft shrinks. Measuring that
+ * beats comparing bearings: a bearing is meaningless within a couple of km of an airport, and
+ * one bad heading sample would flip the display with nothing to flip it back.
  */
-inline bool routeLooksReversed(float ac_lat, float ac_lon, float heading_deg, float origin_lat,
-                               float origin_lon, float dest_lat, float dest_lon,
-                               float min_off_deg = kRouteReverseDeg) {
-  const float off_dest = angleDeltaDeg(heading_deg, bearingDeg(ac_lat, ac_lon, dest_lat, dest_lon));
-  if (off_dest <= min_off_deg) {
-    return false;  // flying at the destination: the route as filed is fine
-  }
-  const float off_origin =
-      angleDeltaDeg(heading_deg, bearingDeg(ac_lat, ac_lon, origin_lat, origin_lon));
-  return off_origin < off_dest;
+inline bool routeTrendSaysReversed(float prev_dest_km, float prev_origin_km, float now_dest_km,
+                                   float now_origin_km, float min_km = kRouteTrendKm) {
+  return (now_dest_km - prev_dest_km) > min_km && (now_origin_km - prev_origin_km) < -min_km;
+}
+
+/** True when the aircraft is closing on the stored destination: the route is right as filed. */
+inline bool routeTrendSaysClosing(float prev_dest_km, float prev_origin_km, float now_dest_km,
+                                  float now_origin_km, float min_km = kRouteTrendKm) {
+  return (now_dest_km - prev_dest_km) < -min_km && (now_origin_km - prev_origin_km) > min_km;
 }
 
 /** Ring buffer of world positions; index 0 is always the oldest sample. */
@@ -376,12 +350,6 @@ void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
 /** Route lookup result (adsbdb): resolved airport codes plus both airport positions. */
 void setRoute(const char* origin_code, const char* dest_code, float origin_lat, float origin_lon,
               float dest_lat, float dest_lon, float route_km);
-
-/**
- * Swap the route's ends when the aircraft is clearly flying the other leg -- see
- * routeLooksReversed(). Called while airborne, so a taxi heading cannot trigger it.
- */
-void orientRouteToPosition(float ac_lat, float ac_lon, float heading_deg, bool heading_valid);
 
 /** True while the route should be (re)fetched: no usable route and the retry window passed. */
 bool routeWanted();

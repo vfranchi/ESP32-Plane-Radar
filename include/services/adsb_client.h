@@ -16,6 +16,12 @@ struct Aircraft {
    * fly the aircraft due north, so the caller must not extrapolate.
    */
   bool track_valid;
+  /**
+   * True when the feed says the airframe is on the ground -- either literally ("ground")
+   * or a numeric altitude at apron level. Some receivers report a taxiing aircraft as
+   * "0 ft" rather than "ground", and a fast taxi then looks airborne by ground speed alone.
+   */
+  bool on_ground;
   float gs_knots;
   /** Age of the position fix at fetch time (ms), from the feed's seen_pos.
    *  Added to the elapsed time when dead-reckoning so the drawn position

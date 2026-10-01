@@ -27,6 +27,17 @@ constexpr float kTrailMinMoveKm = 0.1f;
 constexpr unsigned long kRouteTtlMs = 12UL * 60UL * 60UL * 1000UL;
 /** Minimum spacing between failed route lookups: never hammer a foreign API. */
 constexpr unsigned long kRouteRetryMs = 300000UL;
+/**
+ * Retry window after a lookup that never got to run because the heap had no room for the
+ * TLS handshake. The heap frees up as buffers are recycled, so a minute is enough -- waiting
+ * the full failure window would leave the route (and the ETA) missing for five minutes.
+ */
+constexpr unsigned long kRouteDeferMs = 60000UL;
+/**
+ * How far off the destination's bearing a heading must be before the filed route is taken to
+ * be the reverse leg. 90 leaves a wide margin for a base leg or a hold.
+ */
+constexpr float kRouteReverseDeg = 90.0f;
 
 enum class State {
   kIdle,      // no target configured
@@ -170,6 +181,54 @@ inline float greatCircleKm(float lat1, float lon1, float lat2, float lon2) {
   return 6371.0f * c;
 }
 
+/**
+ * Initial bearing from one point to another, degrees clockwise from north.
+ * Only ever called when a route is resolved or a heading is checked, so the soft-float
+ * sinf/cosf/atan2f cost is paid a handful of times, not per frame.
+ */
+inline float bearingDeg(float lat1, float lon1, float lat2, float lon2) {
+  const float kDegToRad = 3.14159265f / 180.0f;
+  const float dlon = (lon2 - lon1) * kDegToRad;
+  const float y = sinf(dlon) * cosf(lat2 * kDegToRad);
+  const float x = cosf(lat1 * kDegToRad) * sinf(lat2 * kDegToRad) -
+                  sinf(lat1 * kDegToRad) * cosf(lat2 * kDegToRad) * cosf(dlon);
+  float deg = atan2f(y, x) / kDegToRad;
+  if (deg < 0.0f) {
+    deg += 360.0f;
+  }
+  return deg;
+}
+
+/** Smallest angle between two headings, 0..180. */
+inline float angleDeltaDeg(float a, float b) {
+  float d = fabsf(a - b);
+  while (d > 180.0f) {
+    d = 360.0f - d;
+  }
+  return d;
+}
+
+/**
+ * True when this route is filed the other way round for the leg being flown.
+ *
+ * adsbdb answers per callsign, and an airframe flies the city pair in both directions, so
+ * its answer can name the leg the aircraft is not on. The heading tells us which end is
+ * ahead: pointing more than `min_off_deg` away from the destination while pointing more
+ * nearly at the origin means the two need swapping -- otherwise the panel shows the route
+ * backwards and computes an ETA for the airport behind the aircraft.
+ */
+inline bool routeLooksReversed(float ac_lat, float ac_lon, float heading_deg, float origin_lat,
+                               float origin_lon, float dest_lat, float dest_lon,
+                               float min_off_deg = kRouteReverseDeg) {
+  const float off_dest = angleDeltaDeg(heading_deg, bearingDeg(ac_lat, ac_lon, dest_lat, dest_lon));
+  if (off_dest <= min_off_deg) {
+    return false;  // flying at the destination: the route as filed is fine
+  }
+  const float off_origin =
+      angleDeltaDeg(heading_deg, bearingDeg(ac_lat, ac_lon, origin_lat, origin_lon));
+  return off_origin < off_dest;
+}
+
 /** Ring buffer of world positions; index 0 is always the oldest sample. */
 struct Trail {
   float lat[kTrailMax] = {};
@@ -227,6 +286,8 @@ struct RouteCache {
   unsigned long fetched_day = 0;
   bool attempted = false;
   unsigned long last_attempt_ms = 0;
+  /** Window before the next attempt; shortened by defer() when the lookup was skipped. */
+  unsigned long retry_ms = kRouteRetryMs;
 
   void reset() { *this = RouteCache(); }
 
@@ -247,7 +308,7 @@ struct RouteCache {
     if (usableAt(now_ms, day)) {
       return false;
     }
-    if (attempted && (now_ms - last_attempt_ms) < kRouteRetryMs) {
+    if (attempted && (now_ms - last_attempt_ms) < retry_ms) {
       return false;  // failed recently: back off
     }
     return true;
@@ -256,6 +317,18 @@ struct RouteCache {
   void noteAttempt(unsigned long now_ms) {
     attempted = true;
     last_attempt_ms = now_ms;
+    retry_ms = kRouteRetryMs;
+  }
+
+  /**
+   * The lookup never ran (no room for the handshake). Unlike fail(), this keeps whatever
+   * route is already known -- an aged route still beats a blank panel -- and only pushes the
+   * next try out by the short window.
+   */
+  void defer(unsigned long now_ms) {
+    attempted = true;
+    last_attempt_ms = now_ms;
+    retry_ms = kRouteDeferMs;
   }
 
   void succeed(unsigned long now_ms, unsigned long day) {
@@ -300,14 +373,22 @@ const Trail& trail();
 void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
               unsigned long now_ms);
 
-/** Route lookup result (adsbdb): resolved airport codes plus the destination position. */
-void setRoute(const char* origin_code, const char* dest_code, float route_km,
-              float dest_lat, float dest_lon);
+/** Route lookup result (adsbdb): resolved airport codes plus both airport positions. */
+void setRoute(const char* origin_code, const char* dest_code, float origin_lat, float origin_lon,
+              float dest_lat, float dest_lon, float route_km);
+
+/**
+ * Swap the route's ends when the aircraft is clearly flying the other leg -- see
+ * routeLooksReversed(). Called while airborne, so a taxi heading cannot trigger it.
+ */
+void orientRouteToPosition(float ac_lat, float ac_lon, float heading_deg, bool heading_valid);
 
 /** True while the route should be (re)fetched: no usable route and the retry window passed. */
 bool routeWanted();
 void noteRouteAttempt();
 void noteRouteFailure();
+/** The lookup could not run for lack of heap: keep any known route, try again in ~1 min. */
+void noteRouteDeferred();
 
 /**
  * Day number for the route cache. This project has no wall clock (no SNTP, no RTC), so a

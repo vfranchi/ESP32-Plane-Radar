@@ -126,11 +126,12 @@ void adsbFetchTask(void*) {
 
         services::adsb::Aircraft target{};
         const bool found = services::adsb::targetSnapshot(&target);
-        // Fast and not reported as sitting on the apron: that is "live". A missing
-        // altitude field is not evidence of being parked -- 450 kt never is.
-        const bool airborne =
-            found && target.gs_knots >= services::follow::kAirborneGsKnots &&
-            (target.alt[0] == '\0' || strcmp(target.alt, "GND") != 0);
+        // Fast and off the apron: that is "live". Ground speed alone is not enough -- a
+        // taxiing jet passes 40 kt, and a receiver that reports it at "0 ft" instead of
+        // "ground" would otherwise make a landed airframe look airborne.
+        const bool airborne = found &&
+                              target.gs_knots >= services::follow::kAirborneGsKnots &&
+                              !target.on_ground;
         services::follow::onReport(found, airborne, target.lat, target.lon,
                                    target.gs_knots, millis());
 
@@ -151,13 +152,24 @@ void adsbFetchTask(void*) {
             const char* dest =
                 route.dest_iata[0] != '\0' ? route.dest_iata : route.dest_icao;
             services::follow::setRoute(
-                origin, dest,
+                origin, dest, route.origin_lat, route.origin_lon, route.dest_lat,
+                route.dest_lon,
                 services::follow::greatCircleKm(route.origin_lat, route.origin_lon,
-                                                route.dest_lat, route.dest_lon),
-                route.dest_lat, route.dest_lon);
+                                                route.dest_lat, route.dest_lon));
+          } else if (route.low_block) {
+            // The handshake did not fit in the heap, so the lookup never ran: keep any route
+            // already known and look again shortly, instead of blanking the panel for 5 min.
+            services::follow::noteRouteDeferred();
           } else if (route.attempted) {
             services::follow::noteRouteFailure();
           }
+        }
+
+        if (airborne) {
+          // adsbdb files a route per callsign, so it can name the leg this aircraft is not
+          // flying. Only check while airborne: a taxi heading on the apron says nothing.
+          services::follow::orientRouteToPosition(target.lat, target.lon, target.track_deg,
+                                                  target.track_valid);
         }
       } else {
         // The MQTT client stays connected across the fetch: halving the frame

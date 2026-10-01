@@ -79,6 +79,19 @@ bool s_frame_ready = false;
 constexpr uint32_t kFollowTrailBudgetUs = 3000;
 uint32_t s_follow_overlay_us = 0;
 uint32_t s_follow_trail_us = 0;
+
+/**
+ * Opaque plate of the follow panel. Laid out before the aircraft tags are drawn so a tag that
+ * would land under it is skipped -- skipping loses a tag, half-covering it loses both texts.
+ */
+bool s_follow_panel_valid = false;
+int s_follow_panel_left = 0;
+int s_follow_panel_top = 0;
+int s_follow_panel_right = 0;
+int s_follow_panel_bottom = 0;
+char s_follow_panel_lines[4][24] = {};
+int s_follow_panel_line_count = 0;
+bool s_follow_panel_laid_out = false;
 unsigned long s_follow_perf_log_ms = 0;
 
 class DrawScope {
@@ -514,6 +527,18 @@ void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
   }
   ly = std::max(1, std::min(ly, radar::kSize - block_h - 1));
 
+  // The follow panel is opaque and drawn after this, so a tag underneath it would be
+  // half-erased into unreadable fragments. Losing the tag entirely is the lesser evil
+  // (and the panel is short: this touches at most the bottom strip).
+  if (s_follow_panel_valid) {
+    const int tag_left = tag_on_right ? anchor_x : anchor_x - block_w;
+    const int tag_right = tag_on_right ? anchor_x + block_w : anchor_x;
+    if (tag_left < s_follow_panel_right && tag_right > s_follow_panel_left &&
+        ly < s_follow_panel_bottom && ly + block_h > s_follow_panel_top) {
+      return;
+    }
+  }
+
   if (plane.callsign[0] != '\0') {
     s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
     s_draw->drawString(plane.callsign, anchor_x, ly);
@@ -910,7 +935,7 @@ void drawFollowTrail() {
   s_follow_trail_us = micros() - started_us;
 }
 
-/** "1h12" / "42m", rounded to the nearest minute. */
+/** "1h12" / "42min", rounded to the nearest minute. */
 void formatDuration(unsigned long ms, char* out, size_t out_len) {
   const unsigned long total_min = (ms + 30000UL) / 60000UL;
   const unsigned long hours = total_min / 60UL;
@@ -918,21 +943,36 @@ void formatDuration(unsigned long ms, char* out, size_t out_len) {
   if (hours > 0) {
     snprintf(out, out_len, "%luh%02lu", hours, minutes);
   } else {
-    snprintf(out, out_len, "%lum", minutes);
+    // "min", not "m": next to the other labels a bare "m" is a metre as easily as a minute.
+    snprintf(out, out_len, "%lumin", minutes);
   }
 }
 
 /**
- * Three-line readout of the followed flight, on an opaque plate over the lower rings.
+ * Follow panel layout: what the flight is doing, its route, and the current numbers.
+ *
+ * Built top-down into a fixed line list, so a missing route never leaves a gap, and every
+ * value carries its own label -- a single "474kt eta 8m" line reads as neither a speed nor
+ * an ETA. Up to four lines on an opaque plate above the "S" label.
+ *
+ * Split from the drawing half because the plate rectangle has to be known before the aircraft
+ * tags are drawn (see drawAircraftTag), and because it is re-measured only once per frame.
  *
  * No clock time appears here: the firmware has no wall clock (no SNTP, no RTC), so
  * "landed at 14:32" cannot be printed. Everything shown is a live value or a duration.
  */
-void drawFollowPanel() {
+void layoutFollowPanel() {
+  s_follow_panel_laid_out = true;
+  s_follow_panel_valid = false;
+  s_follow_panel_line_count = 0;
+  memset(s_follow_panel_lines, 0, sizeof(s_follow_panel_lines));
+
   const services::follow::Info& info = services::follow::info();
   if (info.state == services::follow::State::kIdle) {
     return;
   }
+  int& line_count = s_follow_panel_line_count;
+  char (*lines)[24] = s_follow_panel_lines;
 
   const char* status = "LIVE";
   switch (info.state) {
@@ -950,26 +990,21 @@ void drawFollowPanel() {
       break;
   }
 
-  // All three lines share one size: when the route is unknown the detail line is moved up
-  // into line2, and a smaller line2 silently truncated it ("no fix from the fee").
-  char line1[24];
-  char line2[24] = {};
-  char line3[24] = {};
-  snprintf(line1, sizeof(line1), "%s %s", info.id, status);
+  snprintf(lines[line_count++], sizeof(lines[0]), "%s %s", info.id, status);
   if (info.route_known) {
-    snprintf(line2, sizeof(line2), "%s > %s", info.origin, info.destination);
+    snprintf(lines[line_count++], sizeof(lines[0]), "%s > %s", info.origin,
+             info.destination);
   }
 
   char duration[12] = {};
   switch (info.state) {
     case services::follow::State::kLive: {
+      snprintf(lines[line_count++], sizeof(lines[0]), "gs %.0f kt", info.gs_knots);
       const float eta_min = services::follow::etaMinutes(info.to_dest_km, info.gs_knots);
-      if (eta_min > 0.0f) {
+      if (eta_min > 0.0f && line_count < 4) {
         formatDuration(static_cast<unsigned long>(eta_min * 60000.0f), duration,
                        sizeof(duration));
-        snprintf(line3, sizeof(line3), "%.0fkt eta %s", info.gs_knots, duration);
-      } else {
-        snprintf(line3, sizeof(line3), "%.0fkt", info.gs_knots);
+        snprintf(lines[line_count++], sizeof(lines[0]), "eta %s", duration);
       }
       break;
     }
@@ -978,24 +1013,25 @@ void drawFollowPanel() {
       if (air_min > 0.0f) {
         formatDuration(static_cast<unsigned long>(air_min * 60000.0f), duration,
                        sizeof(duration));
-        snprintf(line3, sizeof(line3), "block %s", duration);
+        snprintf(lines[line_count++], sizeof(lines[0]), "block %s", duration);
       }
       break;
     }
     case services::follow::State::kGrounded:
-      snprintf(line3, sizeof(line3), "%.0fkt", info.gs_knots);
+      snprintf(lines[line_count++], sizeof(lines[0]), "gs %.0f kt", info.gs_knots);
       break;
     case services::follow::State::kNotSeen: {
-      // Either not departed yet or out of the feed's sight. The route's own distance
-      // gives the estimated trip time -- labelled "est", because it is one.
+      // Either not departed yet or out of the feed's sight, and the firmware cannot tell
+      // which without a wall clock. With a route, its own distance gives the estimated
+      // trip time -- labelled "est", because it is one.
       const float trip_min =
           info.route_known ? services::follow::estimatedTripMinutes(info.route_km) : 0.0f;
       if (trip_min > 0.0f) {
         formatDuration(static_cast<unsigned long>(trip_min * 60000.0f), duration,
                        sizeof(duration));
-        snprintf(line3, sizeof(line3), "est %s", duration);
+        snprintf(lines[line_count++], sizeof(lines[0]), "est trip %s", duration);
       } else {
-        snprintf(line3, sizeof(line3), "no fix from the feed");
+        snprintf(lines[line_count++], sizeof(lines[0]), "no live position");
       }
       break;
     }
@@ -1003,45 +1039,48 @@ void drawFollowPanel() {
       return;
   }
 
-  // One line for the text that exists, so an unknown route does not leave a gap.
-  if (line2[0] == '\0') {
-    snprintf(line2, sizeof(line2), "%s", line3);
-    line3[0] = '\0';
+  applyScaleStyle();
+  const int line_h = s_draw->fontHeight();
+  const int gap = radar::kFollowPanelLineGapPx;
+
+  int text_w = 0;
+  for (int i = 0; i < line_count; ++i) {
+    text_w = std::max(text_w, static_cast<int>(s_draw->textWidth(lines[i])));
+  }
+
+  const int block_h = line_count * line_h + (line_count - 1) * gap;
+  s_follow_panel_left = radar::kCenterX - text_w / 2 - radar::kFollowPanelPadXPx;
+  s_follow_panel_top = radar::kSize - radar::kFollowPanelBottomMarginPx - block_h -
+                       radar::kFollowPanelPadYPx * 2;
+  s_follow_panel_right = s_follow_panel_left + text_w + radar::kFollowPanelPadXPx * 2;
+  s_follow_panel_bottom = s_follow_panel_top + block_h + radar::kFollowPanelPadYPx * 2;
+  s_follow_panel_valid = true;
+}
+
+/** Draws what layoutFollowPanel() measured, laying it out on demand if nobody did it first. */
+void drawFollowPanel() {
+  if (!s_follow_panel_laid_out) {
+    layoutFollowPanel();
+  }
+  if (!s_follow_panel_valid) {
+    return;
   }
 
   applyScaleStyle();
   const int line_h = s_draw->fontHeight();
   const int gap = radar::kFollowPanelLineGapPx;
-  const int lines = line3[0] != '\0' ? 3 : (line2[0] != '\0' ? 2 : 1);
 
-  int text_w = static_cast<int>(s_draw->textWidth(line1));
-  if (line2[0] != '\0') {
-    text_w = std::max(text_w, static_cast<int>(s_draw->textWidth(line2)));
-  }
-  if (line3[0] != '\0') {
-    text_w = std::max(text_w, static_cast<int>(s_draw->textWidth(line3)));
-  }
-
-  const int block_h = lines * line_h + (lines - 1) * gap;
-  const int left = radar::kCenterX - text_w / 2 - radar::kFollowPanelPadXPx;
-  const int top = radar::kSize - radar::kFollowPanelBottomMarginPx - block_h -
-                  radar::kFollowPanelPadYPx * 2;
-
-  s_draw->fillRect(left, top, text_w + radar::kFollowPanelPadXPx * 2,
-                   block_h + radar::kFollowPanelPadYPx * 2, radar::kColorBackground);
+  s_draw->fillRect(s_follow_panel_left, s_follow_panel_top,
+                   s_follow_panel_right - s_follow_panel_left,
+                   s_follow_panel_bottom - s_follow_panel_top, radar::kColorBackground);
   s_draw->setTextDatum(textdatum_t::top_center);
 
-  int y = top + radar::kFollowPanelPadYPx;
-  s_draw->setTextColor(radar::kColorAircraft, radar::kColorBackground);
-  s_draw->drawString(line1, radar::kCenterX, y);
-  y += line_h + gap;
-  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
-  if (line2[0] != '\0') {
-    s_draw->drawString(line2, radar::kCenterX, y);
+  int y = s_follow_panel_top + radar::kFollowPanelPadYPx;
+  for (int i = 0; i < s_follow_panel_line_count; ++i) {
+    s_draw->setTextColor(i == 0 ? radar::kColorAircraft : radar::kColorLabel,
+                         radar::kColorBackground);
+    s_draw->drawString(s_follow_panel_lines[i], radar::kCenterX, y);
     y += line_h + gap;
-  }
-  if (line3[0] != '\0') {
-    s_draw->drawString(line3, radar::kCenterX, y);
   }
 }
 
@@ -1123,6 +1162,10 @@ void renderFrame() {
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
+    // Laid out before the aircraft: drawAircraftTag() drops any tag that would land under
+    // the panel plate, and that only works if the plate's rectangle is known first.
+    s_follow_panel_laid_out = false;
+    layoutFollowPanel();
     drawAircraft();
     if (radar::debugOverlay()) {
       const uint32_t follow_started_us = micros();
@@ -1193,6 +1236,8 @@ void radarDisplayDraw() {
   const DrawScope scope(tft);
   updateFollowCenter();
   drawStaticGrid(tft);
+  s_follow_panel_laid_out = false;
+  layoutFollowPanel();
   drawAircraft();
   drawFollowOverlay();
   drawSignalLabel();

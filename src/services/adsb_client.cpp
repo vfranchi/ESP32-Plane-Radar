@@ -256,6 +256,17 @@ float pickGroundSpeed(const JsonObject& plane) {
   return 0.0f;
 }
 
+/**
+ * Below this altitude (ft) an airframe counts as being on the ground even when the feed did
+ * not say so, because some receivers report a taxiing aircraft as "0 ft" instead of "ground".
+ */
+constexpr float kOnGroundAltFt = 100.0f;
+
+/**
+ * Area-list ground filter: literal "ground" only, so an apron aircraft reported as "0 ft" is
+ * still drawn as traffic. Deliberately narrower than the followed-flight rule above, which
+ * must not call a taxiing airframe "live".
+ */
 bool isOnGround(const JsonObject& plane) {
   if (!plane["alt_baro"].is<const char*>()) {
     return false;
@@ -278,8 +289,12 @@ void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
   out[n] = '\0';
 }
 
-void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
+void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len,
+                       bool* on_ground) {
   out[0] = '\0';
+  if (on_ground != nullptr) {
+    *on_ground = false;
+  }
   if (out_len == 0) {
     return;
   }
@@ -289,6 +304,9 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
     if (strcmp(s, "ground") == 0) {
       strncpy(out, "GND", out_len - 1);
       out[out_len - 1] = '\0';
+      if (on_ground != nullptr) {
+        *on_ground = true;
+      }
       return;
     }
   }
@@ -297,6 +315,10 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
   if (readJsonFloat(plane, "alt_baro", &alt) ||
       readJsonFloat(plane, "alt_geom", &alt)) {
     snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
+    // "0 ft" from a receiver that does not send the "ground" token is still the apron.
+    if (on_ground != nullptr && alt < kOnGroundAltFt) {
+      *on_ground = true;
+    }
   }
 }
 
@@ -307,7 +329,7 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   }
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
-  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt));
+  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground);
 }
 
 /**
@@ -651,11 +673,13 @@ bool lookupRoute(const char* callsign, RouteLookup* out) {
                   static_cast<unsigned>(before),
                   static_cast<unsigned>(kRouteHandshakeMinBlock),
                   static_cast<unsigned>(after));
+    // Flag it before any return: the caller must be able to tell "the heap said not now"
+    // from "the API answered", because only the second one deserves the long backoff.
+    out->low_block = true;
     if (after < kRouteHandshakeMinBlock) {
       Serial.println("adsbdb: still no room for a handshake, route left unknown");
       return false;
     }
-    out->low_block = true;
   }
 
   // Function-local session on purpose: its destructor (and the explicit stop below)

@@ -23,6 +23,7 @@ using services::follow::kIdLen;
 using services::follow::kTrailMax;
 using services::follow::looksLikeHex;
 using services::follow::normalizeId;
+using services::follow::routeLooksReversed;
 using services::follow::RouteCache;
 using services::follow::Session;
 using services::follow::State;
@@ -132,6 +133,31 @@ int main() {
   CHECK(rc.wantedAt(1000 + 7 * kMinute, 1, false));    // -> asks for a fresh lookup
   rc.fail();
   CHECK(!rc.usableAt(1000 + 7 * kMinute, 0));  // a failure drops the cache
+  // --- a lookup that never ran (no room for the handshake) keeps the route and retries soon ---
+  RouteCache deferred;
+  deferred.noteAttempt(1000);
+  CHECK(!deferred.wantedAt(1000 + kMinute, 0, false));  // nothing resolved yet, still backing off
+  deferred.defer(1000);                                 // the handshake never fit in the heap
+  CHECK(!deferred.wantedAt(1000 + 30 * 1000, 0, false));   // a defer is not an instant retry
+  CHECK(deferred.wantedAt(1000 + kMinute + 1, 0, false));  // but ~1 min, not the 5 min of a failure
+  deferred.succeed(1000 + kMinute + 1, 0);
+  CHECK(deferred.usableAt(1000 + kMinute + 2, 0));
+  // The contrast that matters: a defer keeps the route already on screen, only fail() drops it.
+  deferred.defer(1000 + 2 * kMinute);
+  CHECK(deferred.usableAt(1000 + 2 * kMinute + 1, 0));
+  deferred.fail();
+  CHECK(!deferred.usableAt(1000 + 2 * kMinute + 2, 0));
+
+  // --- the filed route can be the other leg: the heading decides which end is ahead ---
+  // Live case that exposed this: AZU4269 at -23.7007/-46.3556, track 78 deg, adsbdb said
+  // REC > VCP, but the aircraft was 111 km out of VCP flying away from it.
+  const float vcp_lat = -23.007f, vcp_lon = -47.135f, rec_lat = -8.126f, rec_lon = -34.923f;
+  CHECK(routeLooksReversed(-23.7007f, -46.3556f, 78.13f, rec_lat, rec_lon, vcp_lat, vcp_lon));
+  // Same spot, heading back at VCP: what adsbdb said is then right, so nothing to swap.
+  CHECK(!routeLooksReversed(-23.7007f, -46.3556f, 313.0f, rec_lat, rec_lon, vcp_lat, vcp_lon));
+  // Just off VCP climbing out toward REC, filed VCP > REC: correct as filed.
+  CHECK(!routeLooksReversed(-23.10f, -47.00f, 40.0f, vcp_lat, vcp_lon, rec_lat, rec_lon));
+
   RouteCache hex_cache;
   CHECK(!hex_cache.wantedAt(10000, 0, /*target_is_hex=*/true));  // adsbdb resolves callsigns only
   CHECK(hex_cache.wantedAt(10000, 0, false));

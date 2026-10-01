@@ -266,4 +266,53 @@ struct RouteCache {
   void fail() { valid = false; }
 };
 
+// --- stateful API, implemented in src/services/flight_follow.cpp ---
+
+/** Everything the info panel needs, refreshed by onReport()/setRoute(). */
+struct Info {
+  State state = State::kIdle;
+  char id[kIdLen] = {};
+  char origin[kIataLen] = {};
+  char destination[kIataLen] = {};
+  char destination_name[28] = {};
+  bool route_known = false;
+  float route_km = 0.0f;    // origin -> destination
+  float to_dest_km = 0.0f;  // aircraft -> destination, 0 when unknown
+  float gs_knots = 0.0f;
+};
+
+/** Load the saved target from NVS. Call once, after services::location::init(). */
+void init();
+
+/** Portal field. Blank clears the target; either way it persists and resets the session. */
+void setTargetFromPortal(const char* text);
+
+/** Stop following (BOOT double tap, factory reset): same as an empty portal field. */
+void reset();
+
+const Target& target();
+const Session& session();
+const Info& info();
+const Trail& trail();
+
+/** Feed one target poll result: state, session, trail and info all follow from it. */
+void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
+              unsigned long now_ms);
+
+/** Route lookup result (adsbdb). Also records the destination position for the ETA. */
+void setRoute(const char* origin_iata, const char* dest_iata, const char* dest_name,
+              float route_km, float dest_lat, float dest_lon);
+
+/** True while the route should be (re)fetched: no usable route and the retry window passed. */
+bool routeWanted();
+void noteRouteAttempt();
+void noteRouteFailure();
+
+/**
+ * Day number for the route cache. This project has no wall clock (no SNTP, no RTC), so a
+ * "day" is boot-relative: millis() rolled up. Consequence, on purpose: the 12 h TTL is what
+ * really ages a route, and the day rule only catches a reboot.
+ */
+unsigned long currentDay();
+
 }  // namespace services::follow

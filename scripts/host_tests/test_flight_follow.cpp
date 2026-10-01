@@ -138,5 +138,5 @@ int main() {
   RouteCache blank_day;
   CHECK(!blank_day.usableAt(10000, 0));
 
-  return testSummary("test_flight_follow");
+  return testSummary("flight_follow");
 }

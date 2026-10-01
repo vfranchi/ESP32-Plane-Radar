@@ -105,14 +105,12 @@ void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
   }
 }
 
-void setRoute(const char* origin_iata, const char* dest_iata, const char* dest_name,
-              float route_km, float dest_lat, float dest_lon) {
-  snprintf(s_info.origin, sizeof(s_info.origin), "%s", origin_iata != nullptr ? origin_iata : "");
+void setRoute(const char* origin_code, const char* dest_code, float route_km,
+              float dest_lat, float dest_lon) {
+  snprintf(s_info.origin, sizeof(s_info.origin), "%s", origin_code != nullptr ? origin_code : "");
   snprintf(s_info.destination, sizeof(s_info.destination), "%s",
-           dest_iata != nullptr ? dest_iata : "");
-  snprintf(s_info.destination_name, sizeof(s_info.destination_name), "%s",
-           dest_name != nullptr ? dest_name : "");
-  s_info.route_known = dest_iata != nullptr && dest_iata[0] != '\0';
+           dest_code != nullptr ? dest_code : "");
+  s_info.route_known = dest_code != nullptr && dest_code[0] != '\0';
   s_info.route_km = route_km;
   s_dest_lat = dest_lat;
   s_dest_lon = dest_lon;

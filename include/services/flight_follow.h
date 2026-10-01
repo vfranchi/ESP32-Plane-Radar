@@ -12,6 +12,7 @@ namespace services::follow {
 
 constexpr size_t kIdLen = 9;      // callsign (8 + NUL) or 6 hex + NUL
 constexpr size_t kIataLen = 4;    // IATA code + NUL
+constexpr size_t kCodeLen = 5;    // IATA (3) or ICAO (4) + NUL
 constexpr size_t kTrailMax = 64;  // ~5.3 min of trail at the 5 s poll
 
 constexpr float kKmPerDeg = 111.0f;
@@ -272,9 +273,9 @@ struct RouteCache {
 struct Info {
   State state = State::kIdle;
   char id[kIdLen] = {};
-  char origin[kIataLen] = {};
-  char destination[kIataLen] = {};
-  char destination_name[28] = {};
+  /** Resolved airport code: the IATA one when the route data has it, else the ICAO one. */
+  char origin[kCodeLen] = {};
+  char destination[kCodeLen] = {};
   bool route_known = false;
   float route_km = 0.0f;    // origin -> destination
   float to_dest_km = 0.0f;  // aircraft -> destination, 0 when unknown
@@ -299,9 +300,9 @@ const Trail& trail();
 void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
               unsigned long now_ms);
 
-/** Route lookup result (adsbdb). Also records the destination position for the ETA. */
-void setRoute(const char* origin_iata, const char* dest_iata, const char* dest_name,
-              float route_km, float dest_lat, float dest_lon);
+/** Route lookup result (adsbdb): resolved airport codes plus the destination position. */
+void setRoute(const char* origin_code, const char* dest_code, float route_km,
+              float dest_lat, float dest_lon);
 
 /** True while the route should be (re)fetched: no usable route and the retry window passed. */
 bool routeWanted();

@@ -200,20 +200,25 @@ float pickNoseHeading(const JsonObject& plane) {
   return 0.0f;
 }
 
-float pickTrackHeading(const JsonObject& plane) {
+float pickTrackHeading(const JsonObject& plane, bool* valid) {
   float v = 0.0f;
   if (readJsonFloat(plane, "track", &v)) {
+    *valid = true;
     return v;
   }
   if (readJsonFloat(plane, "true_heading", &v)) {
+    *valid = true;
     return v;
   }
   if (readJsonFloat(plane, "mag_heading", &v)) {
+    *valid = true;
     return v;
   }
   if (readJsonFloat(plane, "dir", &v)) {
+    *valid = true;
     return v;
   }
+  *valid = false;
   return 0.0f;
 }
 
@@ -450,7 +455,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
       parsed[n].lat = plane["lat"].as<float>();
       parsed[n].lon = plane["lon"].as<float>();
       parsed[n].nose_deg = pickNoseHeading(plane);
-      parsed[n].track_deg = pickTrackHeading(plane);
+      parsed[n].track_deg = pickTrackHeading(plane, &parsed[n].track_valid);
       parsed[n].gs_knots = pickGroundSpeed(plane);
 
       // seen_pos: seconds since this position was measured. Use it as the

@@ -111,21 +111,29 @@ inline State deriveState(bool found, bool airborne, bool ever_airborne) {
 /** Per-follow session memory: the only way to tell "landed" from "not started". */
 struct Session {
   bool ever_airborne = false;
+  bool ever_seen = false;
   unsigned long first_air_ms = 0;
   unsigned long last_air_ms = 0;
+  unsigned long last_seen_ms = 0;
   unsigned long landed_ms = 0;
   unsigned long ground_since_ms = 0;
 
   void reset() {
     ever_airborne = false;
+    ever_seen = false;
     first_air_ms = 0;
     last_air_ms = 0;
+    last_seen_ms = 0;
     landed_ms = 0;
     ground_since_ms = 0;
   }
 
   /** Feed one poll result; returns the state the screen should show. */
   State update(bool found, bool airborne, unsigned long now_ms) {
+    if (found) {
+      ever_seen = true;
+      last_seen_ms = now_ms;
+    }
     if (airborne) {
       if (!ever_airborne) {
         ever_airborne = true;
@@ -144,6 +152,18 @@ struct Session {
       landed_ms = ground_since_ms != 0 ? ground_since_ms : now_ms;
     }
     return state;
+  }
+
+  /**
+   * Minutes since the feed last reported this aircraft, or 0 when it was never seen in this
+   * session. This firmware has no clock, so the age is what tells "the feed lost it a minute
+   * ago" from "it never departed" -- which look identical on the panel otherwise.
+   */
+  float minutesSinceSeen(unsigned long now_ms) const {
+    if (!ever_seen || now_ms <= last_seen_ms) {
+      return 0.0f;
+    }
+    return static_cast<float>(now_ms - last_seen_ms) / 60000.0f;
   }
 
   /** Observed block time in minutes; 0 before departure or right after take-off. */
@@ -327,6 +347,10 @@ struct Info {
   float route_km = 0.0f;    // origin -> destination
   float to_dest_km = 0.0f;  // aircraft -> destination, 0 when unknown
   float gs_knots = 0.0f;
+  /** Minutes since the feed last had this aircraft; 0 while it is being reported. */
+  float since_seen_min = 0.0f;
+  /** Whether the feed is reporting it right now, so the panel can say when it is not. */
+  bool found = false;
 };
 
 /** Load the saved target from NVS. Call once, after services::location::init(). */

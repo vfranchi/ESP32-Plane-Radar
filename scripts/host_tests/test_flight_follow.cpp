@@ -168,5 +168,19 @@ int main() {
   RouteCache blank_day;
   CHECK(!blank_day.usableAt(10000, 0));
 
+  // --- the age of the last fix is what tells "feed lost it" from "never departed" ---
+  Session seen;
+  CHECK(seen.minutesSinceSeen(60000) == 0.0f);  // never seen in this session
+  seen.update(true, true, 10000);
+  CHECK(seen.ever_seen);
+  CHECK(seen.minutesSinceSeen(10000) == 0.0f);        // just reported
+  CHECK(near(seen.minutesSinceSeen(10000 + 120000), 2.0f, 0.01f));
+  seen.update(false, false, 200000);                   // out of the feed's sight
+  // Still counted from the last *fix* (10 s), not from the poll that failed to find it.
+  CHECK(near(seen.minutesSinceSeen(290000), 280000.0f / 60000.0f, 0.01f));
+  seen.reset();
+  CHECK(!seen.ever_seen);
+  CHECK(seen.minutesSinceSeen(999999) == 0.0f);
+
   return testSummary("flight_follow");
 }

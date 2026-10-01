@@ -154,6 +154,8 @@ void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
               unsigned long now_ms) {
   s_info.state = s_session.update(found, airborne, now_ms);
   s_info.gs_knots = found ? gs_knots : 0.0f;
+  s_info.found = found;
+  s_info.since_seen_min = found ? 0.0f : s_session.minutesSinceSeen(now_ms);
   s_info.to_dest_km =
       (found && s_has_dest) ? greatCircleKm(lat, lon, s_dest_lat, s_dest_lon) : 0.0f;
   if (found && airborne) {

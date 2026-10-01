@@ -1008,33 +1008,41 @@ void layoutFollowPanel() {
       }
       break;
     }
-    case services::follow::State::kLanded: {
-      const float air_min = services::follow::session().airMinutes();
-      if (air_min > 0.0f) {
-        formatDuration(static_cast<unsigned long>(air_min * 60000.0f), duration,
-                       sizeof(duration));
-        snprintf(lines[line_count++], sizeof(lines[0]), "block %s", duration);
+    case services::follow::State::kLanded:
+    case services::follow::State::kNotSeen: {
+      // No live fix. Say that first, with its age when this session ever had one: a feed
+      // without coverage looks exactly like a flight that never departed, and only the age
+      // separates the two. Then whatever the firmware does know about the flight.
+      if (!info.found) {
+        if (info.since_seen_min >= 1.0f && line_count < 4) {
+          formatDuration(static_cast<unsigned long>(info.since_seen_min * 60000.0f), duration,
+                         sizeof(duration));
+          snprintf(lines[line_count++], sizeof(lines[0]), "no position %s", duration);
+        } else {
+          snprintf(lines[line_count++], sizeof(lines[0]), "no position");
+        }
+      }
+      if (info.state == services::follow::State::kLanded) {
+        const float air_min = services::follow::session().airMinutes();
+        if (air_min > 0.0f && line_count < 4) {
+          formatDuration(static_cast<unsigned long>(air_min * 60000.0f), duration,
+                         sizeof(duration));
+          snprintf(lines[line_count++], sizeof(lines[0]), "block %s", duration);
+        }
+      } else if (info.route_known && line_count < 4) {
+        // Not seen at all yet, but its route is known: the trip's own length is the estimate.
+        const float trip_min = services::follow::estimatedTripMinutes(info.route_km);
+        if (trip_min > 0.0f) {
+          formatDuration(static_cast<unsigned long>(trip_min * 60000.0f), duration,
+                         sizeof(duration));
+          snprintf(lines[line_count++], sizeof(lines[0]), "est trip %s", duration);
+        }
       }
       break;
     }
     case services::follow::State::kGrounded:
       snprintf(lines[line_count++], sizeof(lines[0]), "gs %.0f kt", info.gs_knots);
       break;
-    case services::follow::State::kNotSeen: {
-      // Either not departed yet or out of the feed's sight, and the firmware cannot tell
-      // which without a wall clock. With a route, its own distance gives the estimated
-      // trip time -- labelled "est", because it is one.
-      const float trip_min =
-          info.route_known ? services::follow::estimatedTripMinutes(info.route_km) : 0.0f;
-      if (trip_min > 0.0f) {
-        formatDuration(static_cast<unsigned long>(trip_min * 60000.0f), duration,
-                       sizeof(duration));
-        snprintf(lines[line_count++], sizeof(lines[0]), "est trip %s", duration);
-      } else {
-        snprintf(lines[line_count++], sizeof(lines[0]), "no live position");
-      }
-      break;
-    }
     case services::follow::State::kIdle:
       return;
   }

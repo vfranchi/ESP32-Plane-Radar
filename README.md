@@ -18,7 +18,11 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
 | Action | Effect |
 |--------|--------|
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
-| **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
+| **Double tap** | Stop following the flight (`follow_id` cleared). Only with a flight followed: otherwise the second tap is swallowed, never a double range change |
+| **Hold 3 s** | Clear Wi‑Fi, location, units, follow target and MQTT config; reboot into setup portal |
+
+A single tap is held back for **350 ms** (`kDoubleTapWindowMs`) so a second one can cancel it;
+that is why the range changes just after the tap, not during it.
 
 During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
 
@@ -44,6 +48,7 @@ The same portal runs on the setup AP and on the device’s LAN IP while connecte
 | **Latitude / Longitude** | Radar center and ADS-B query position (defaults in `config.h` until set) |
 | **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
 | **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
+| **Follow flight** | Callsign (e.g. `GLO1724`) or Mode-S hex (6 hex digits) of the flight to follow. **Blank = off** |
 | **Publish to Home Assistant (MQTT)** | Master switch. **Off by default**: with no broker host the radar never tries to connect |
 | **MQTT broker host / port** | Broker address; port empty = `1883`. Plain TCP only (see below) |
 | **MQTT username / password** | Broker credentials, stored in NVS. Sent only to the broker |
@@ -97,6 +102,45 @@ As range decreases (or aircraft approach), targets move inward; beyond-ring dots
 - Fetch radius: `ui::radar::fetchRadiusKm()` — scales with the active preset to roughly the screen edge (so rim dots have data)
 - Poll interval: `kAdsbFetchIntervalMs` (5 s) in `config.h`
 - Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
+
+### Follow a flight
+
+Set **Follow flight** in the portal and the radar stops watching the neighbourhood and starts
+watching one aircraft: the scope recentres on it, its path is drawn behind it, and a readout
+replaces the empty space below it.
+
+- **Recentring** — every frame, with a **6 px dead-band** so a jittery fix cannot make the rings
+  crawl. The whole scope moves: rings, runways, projection and fetch centre.
+- **Trail** — the last 64 fixes (about 5 minutes at the 5 s poll), drawn dim amber. A sample
+  outside the scope breaks the line rather than being clipped onto the rim.
+- **Readout** — three lines: callsign and state on top (in the aircraft colour), then the route
+  and the current numbers.
+
+| State | Meaning | Third line |
+|-------|---------|-----------|
+| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `412kt eta 1h12` |
+| `ON GROUND` | Seen at the airport, never airborne yet this session | `0kt` |
+| `NOT LIVE` | Configured but not in the feed | `est 2h05` when the route is known, else `no fix from the feed` |
+| `LANDED` | Was airborne this session, now on the ground or gone | `block 1h05` |
+
+**Data sources.** Live positions come only from **adsb.fi** (`opendata.adsb.fi`), one request per
+second at most — the followed flight is looked up every poll, the surrounding traffic every third
+one. The route (origin → destination) is a separate, one-shot lookup on **adsbdb**
+(`api.adsbdb.com/v0/callsign/`) **when the target is set**, never per poll; the result is kept in
+RAM for 12 h or until the day rolls over, because a callsign is reused day to day with a different
+route pair. adsbdb is a different host, so it needs its own TLS handshake: if the largest free heap
+block is under 40 KB the feed's keep-alive is dropped first, and the lookup is skipped if that does
+not free enough.
+
+**No wall clock.** The firmware has no SNTP and no RTC, so the readout shows durations, never clock
+times: `est` is derived from the route distance at 750 km/h, and `block` is the time observed
+airborne. "Landed at 14:32" cannot be printed without adding a time source.
+
+**Credit.** Flight route data is the work of David Taylor, Edinburgh and Jim Mason, Glasgow, and
+may not be copied, published or incorporated into other databases without the explicit permission
+of David J Taylor, Edinburgh. The firmware queries it at runtime and keeps a few display fields;
+the dataset is never redistributed. ADS-B data courtesy of [adsb.fi](https://adsb.fi) — please
+consider feeding them a receiver.
 
 ## Configuration
 
@@ -174,6 +218,8 @@ include/
     mqtt_config.h          — the 8 portal fields in NVS
     mqtt_discovery.h       — pure discovery payload builders (host-tested)
     nearest_aircraft.h     — pure distance math (host-tested)
+    flight_follow.h        — follow-target identity, session state, trail, ETA math (host-tested)
+    flight_follow.cpp      — the same, plus NVS and the live state
 data/
   ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/

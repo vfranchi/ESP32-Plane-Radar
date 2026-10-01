@@ -63,8 +63,8 @@ void adsbFetchTask(void*) {
       // The MQTT client stays connected across the fetch: halving the frame
       // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what
       // the 2x16 KB mbedtls buffers need, so no yield is necessary any more.
-      services::adsb::fetchUpdate(services::location::lat(),
-                                  services::location::lon(),
+      services::adsb::fetchUpdate(services::location::centerLat(),
+                                  services::location::centerLon(),
                                   ui::radar::fetchRadiusKm());
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));

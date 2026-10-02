@@ -99,7 +99,7 @@ WiFiManagerParameter s_param_debug("debug_overlay",
 // a blank value is not "look up nothing", it clears the target.
 constexpr int kFollowParamLen = services::follow::kIdLen - 1;  // 8 characters
 WiFiManagerParameter s_param_follow("follow_id",
-                                    "Follow flight (callsign or Mode-S hex, blank = off)", "",
+                                    "<br/>Follow flight (callsign or Mode-S hex, blank = off)", "",
                                     kFollowParamLen,
                                     " type=\"text\" placeholder=\"e.g. GLO1724\"");
 
@@ -109,7 +109,7 @@ WiFiManagerParameter s_param_follow("follow_id",
 char s_mqtt_on_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_mqtt_on("mqtt_on", "Publish to Home Assistant (MQTT)", "T", 2,
                                      s_mqtt_on_checkbox_attrs, WFM_LABEL_AFTER);
-WiFiManagerParameter s_param_mqtt_host("mqtt_host", "MQTT broker host", "", 64,
+WiFiManagerParameter s_param_mqtt_host("mqtt_host", "<br/>MQTT broker host", "", 64,
                                        " type=\"text\" placeholder=\"e.g. 192.168.0.10\"");
 WiFiManagerParameter s_param_mqtt_port("mqtt_port", "MQTT broker port", "", kPortParamLen,
                                        " type=\"number\" min=\"1\" max=\"65535\""
@@ -174,13 +174,13 @@ void onPortalParamsSaved() {
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveDebugOverlayFromPortal(s_param_debug.getValue());
   services::follow::setTargetFromPortal(s_param_follow.getValue());
-
-  refreshPortalParamValues();
   services::mqtt::saveFromPortal(
       s_param_mqtt_host.getValue(), s_param_mqtt_port.getValue(),
       s_param_mqtt_user.getValue(), s_param_mqtt_pass.getValue(),
       s_param_mqtt_topic.getValue(), s_param_mqtt_prefix.getValue(),
       s_param_mqtt_name.getValue(), s_param_mqtt_on.getValue());
+
+  refreshPortalParamValues();
 }
 
 void attachPortalParams(WiFiManager& wm) {

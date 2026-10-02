@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "services/adsb_client.h"
+#include "services/flight_follow.h"
 #include "services/mqtt_config.h"
 #include "services/mqtt_discovery.h"
 #include "services/nearest_aircraft.h"
@@ -122,6 +123,13 @@ void publishLocationState() {
   publishStateTopic("lon", buf, false);
 }
 
+/** The followed flight, editable from HA. The board normalizes the id (trim +
+ *  upper-case) and rejects nonsense, so this is what it actually follows: a
+ *  double tap clears the target and HA must not keep showing the old callsign. */
+void publishFollowState() {
+  publishStateTopic("follow", services::follow::target().id, false);
+}
+
 /** Every controllable/reported value once, so HA holds real states instead of
  *  'unknown' before the first command. */
 void publishAllStates() {
@@ -130,6 +138,7 @@ void publishAllStates() {
   publishSwitchState("runways", ui::radar::showRunways());
   publishSwitchState("debug", ui::radar::debugOverlay());
   publishLocationState();
+  publishFollowState();
 }
 
 void publishTelemetry() {
@@ -165,6 +174,10 @@ void publishTelemetry() {
       Serial.println("MQTT: info publish failed");
     }
   }
+
+  // Cheap and it keeps the editable field honest: the button can clear the target
+  // behind HA's back (double tap), and a stale id cannot be re-set to itself.
+  publishFollowState();
 }
 
 void handleCommand(char* topic, const char* value) {
@@ -207,6 +220,9 @@ void handleCommand(char* topic, const char* value) {
     // Re-publish the truth, not the request: an invalid value must not show
     // as applied in Home Assistant.
     publishLocationState();
+  } else if (std::strcmp(key, "follow") == 0) {
+    services::follow::setTargetFromPortal(value);
+    publishFollowState();
   } else {
     Serial.printf("MQTT: unknown command topic %s\n", topic);
     return;

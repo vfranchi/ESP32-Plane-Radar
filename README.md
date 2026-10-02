@@ -162,7 +162,7 @@ Range presets: `include/ui/radar_range.h` (`kRangePresets`).
 
 The radar can publish itself to Home Assistant over MQTT with **auto-discovery**: no YAML on the HA
 side, no entity to declare by hand. Fill in the MQTT fields in the config portal (see above), enable
-**Publish to Home Assistant**, and the device appears as one HA device with eleven entities.
+**Publish to Home Assistant**, and the device appears as one HA device with twelve entities.
 
 - **Discovery topics:** `<prefix>/<component>/<node>/<object>/config` (retained), where `<node>` is
   the base topic with `/` replaced by `_`, e.g. `homeassistant/select/planeradar_a1b2c3/range/config`.
@@ -182,6 +182,7 @@ side, no entity to declare by hand. Fill in the MQTT fields in the config portal
 | Wi-Fi RSSI | `sensor` | dBm |
 | Free heap | `sensor` | Bytes; the radar skips telemetry below `kMqttMinFreeHeap` |
 | Radar info | `sensor` | IP as state, SSID/uptime/firmware as attributes |
+| Follow flight | `text` | Callsign (e.g. `GLO1724`) or Mode-S hex of the flight to follow; **blank = off**. Same field as the portal, settable from HA |
 
 Commands are applied to NVS and **re-published as state**, so HA always shows the value the radar
 actually accepted (an out-of-range coordinate is rejected, not echoed back).

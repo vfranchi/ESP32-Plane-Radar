@@ -17,6 +17,7 @@
 #include "config.h"
 #include "services/flight_follow.h"
 #include "services/mqtt_config.h"
+#include "services/mqtt_client.h"
 #include "services/radar_location.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
@@ -181,6 +182,7 @@ void onPortalParamsSaved() {
       s_param_mqtt_name.getValue(), s_param_mqtt_on.getValue());
 
   refreshPortalParamValues();
+  services::mqtt::init();
 }
 
 void attachPortalParams(WiFiManager& wm) {

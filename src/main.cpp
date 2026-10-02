@@ -140,30 +140,6 @@ void adsbFetchTask(void*) {
                                       services::location::centerLon(),
                                       ui::radar::fetchRadiusKm());
         }
-
-        if (services::follow::routeWanted()) {
-          // Once per flight, not once per poll: the route is static per callsign, and
-          // this is the only request that needs a second TLS handshake.
-          services::follow::noteRouteAttempt();
-          services::adsb::RouteLookup route;
-          if (services::adsb::lookupRoute(tgt.id, &route)) {
-            const char* origin = route.origin_iata[0] != '\0' ? route.origin_iata
-                                                             : route.origin_icao;
-            const char* dest =
-                route.dest_iata[0] != '\0' ? route.dest_iata : route.dest_icao;
-            services::follow::setRoute(
-                origin, dest, route.origin_lat, route.origin_lon, route.dest_lat,
-                route.dest_lon,
-                services::follow::greatCircleKm(route.origin_lat, route.origin_lon,
-                                                route.dest_lat, route.dest_lon));
-          } else if (route.low_block) {
-            // The handshake did not fit in the heap, so the lookup never ran: keep any route
-            // already known and look again shortly, instead of blanking the panel for 5 min.
-            services::follow::noteRouteDeferred();
-          } else if (route.attempted) {
-            services::follow::noteRouteFailure();
-          }
-        }
       } else {
         // The MQTT client stays connected across the fetch: halving the frame
         // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what

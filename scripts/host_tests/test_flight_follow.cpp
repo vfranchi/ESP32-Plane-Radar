@@ -2,9 +2,9 @@
  * Host test for the follow-flight logic.
  *
  * The part that decides *what* the panel shows -- state machine, session times, trail
- * ring, ETA and route-cache lifetime -- is plain C++ with no Arduino and no NVS, so it
- * is checked here rather than on the bench (see scripts/run_host_tests.sh). Only the
- * network and the drawing of follow mode need the board.
+ * ring, age of the last fix -- is plain C++ with no Arduino and no NVS, so it is checked
+ * here rather than on the bench (see scripts/run_host_tests.sh). Only the network and the
+ * drawing of follow mode need the board.
  */
 #include <cmath>
 #include <cstdio>
@@ -16,24 +16,16 @@
 namespace {
 
 using services::follow::deriveState;
-using services::follow::estimatedTripMinutes;
-using services::follow::etaMinutes;
 using services::follow::greatCircleKm;
 using services::follow::kIdLen;
 using services::follow::kTrailMax;
 using services::follow::looksLikeHex;
 using services::follow::normalizeId;
-using services::follow::routeTrendSaysClosing;
-using services::follow::routeTrendSaysReversed;
-using services::follow::RouteCache;
 using services::follow::Session;
 using services::follow::State;
 using services::follow::Trail;
 
 bool near(float a, float b, float tol) { return std::fabs(a - b) <= tol; }
-
-constexpr unsigned long kMinute = 60UL * 1000UL;
-constexpr unsigned long kHour = 60UL * kMinute;
 
 }  // namespace
 
@@ -82,13 +74,6 @@ int main() {
   s.reset();
   CHECK(!s.ever_airborne && s.airMinutes() == 0.0f);
 
-  // --- ETA: unknown inputs are negative, never a huge number ---
-  CHECK(near(etaMinutes(111.0f, 600.0f), 6.0f, 0.05f));  // 111 km at 1111 km/h
-  CHECK(etaMinutes(10.0f, 0.0f) < 0.0f);
-  CHECK(etaMinutes(0.0f, 400.0f) < 0.0f);
-  CHECK(near(estimatedTripMinutes(750.0f), 60.0f, 0.05f));
-  CHECK(estimatedTripMinutes(0.0f) < 0.0f);
-
   // --- great circle: one degree of latitude is ~111 km ---
   CHECK(near(greatCircleKm(0.0f, 0.0f, 1.0f, 0.0f), 111.19f, 1.0f));
   CHECK(near(greatCircleKm(-23.43f, -46.47f, -23.43f, -46.47f), 0.0f, 1e-3f));
@@ -118,55 +103,6 @@ int main() {
   CHECK(la > 11.0f + 0.01f * static_cast<float>(kTrailMax));  // newest is last
   t.clear();
   CHECK(t.size() == 0);
-
-  // --- route cache: a callsign is reused across days, so the day is part of its identity ---
-  RouteCache rc;
-  CHECK(!rc.usableAt(1000, 0));                        // nothing resolved yet
-  CHECK(rc.wantedAt(1000, 0, /*target_is_hex=*/false));  // wanted, never attempted
-  rc.noteAttempt(1000);
-  CHECK(!rc.wantedAt(1000 + kMinute, 0, false));       // inside the 5 min backoff
-  CHECK(rc.wantedAt(1000 + 6 * kMinute, 0, false));    // retry allowed
-  rc.succeed(1000 + 6 * kMinute, 0);
-  CHECK(rc.usableAt(1000 + 7 * kMinute, 0));           // resolved, same day
-  CHECK(rc.usableAt(1000 + 11 * kHour, 0));            // under the 12 h TTL
-  CHECK(!rc.usableAt(1000 + 13 * kHour, 0));           // past the TTL
-  CHECK(!rc.usableAt(1000 + 7 * kMinute, 1));          // day rolled over
-  CHECK(rc.wantedAt(1000 + 7 * kMinute, 1, false));    // -> asks for a fresh lookup
-  rc.fail();
-  CHECK(!rc.usableAt(1000 + 7 * kMinute, 0));  // a failure drops the cache
-  // --- a lookup that never ran (no room for the handshake) keeps the route and retries soon ---
-  RouteCache deferred;
-  deferred.noteAttempt(1000);
-  CHECK(!deferred.wantedAt(1000 + kMinute, 0, false));  // nothing resolved yet, still backing off
-  deferred.defer(1000);                                 // the handshake never fit in the heap
-  CHECK(!deferred.wantedAt(1000 + 30 * 1000, 0, false));   // a defer is not an instant retry
-  CHECK(deferred.wantedAt(1000 + kMinute + 1, 0, false));  // but ~1 min, not the 5 min of a failure
-  deferred.succeed(1000 + kMinute + 1, 0);
-  CHECK(deferred.usableAt(1000 + kMinute + 2, 0));
-  // The contrast that matters: a defer keeps the route already on screen, only fail() drops it.
-  deferred.defer(1000 + 2 * kMinute);
-  CHECK(deferred.usableAt(1000 + 2 * kMinute + 1, 0));
-  deferred.fail();
-  CHECK(!deferred.usableAt(1000 + 2 * kMinute + 2, 0));
-
-  // --- the wrong destination is caught by measurement, not by airport names ---
-  // Live case: ITY675 climbing out of GRU for FCO, with a per-callsign lookup that can name
-  // either leg. Toward FCO: the destination closes and the origin opens.
-  CHECK(!routeTrendSaysReversed(9430.0f, 20.0f, 9424.0f, 26.0f));
-  CHECK(routeTrendSaysClosing(9430.0f, 20.0f, 9424.0f, 26.0f));
-  // The same flight with the ends the wrong way round: the airport behind (GRU) "opens"
-  // while the real destination closes -> swap them.
-  CHECK(routeTrendSaysReversed(20.0f, 9430.0f, 26.0f, 9424.0f));
-  CHECK(!routeTrendSaysClosing(20.0f, 9430.0f, 26.0f, 9424.0f));
-  // Position jitter is not progress in either direction.
-  CHECK(!routeTrendSaysReversed(100.0f, 500.0f, 100.1f, 499.9f));
-  CHECK(!routeTrendSaysClosing(100.0f, 500.0f, 100.1f, 499.9f));
-
-  RouteCache hex_cache;
-  CHECK(!hex_cache.wantedAt(10000, 0, /*target_is_hex=*/true));  // adsbdb resolves callsigns only
-  CHECK(hex_cache.wantedAt(10000, 0, false));
-  RouteCache blank_day;
-  CHECK(!blank_day.usableAt(10000, 0));
 
   // --- the age of the last fix is what tells "feed lost it" from "never departed" ---
   Session seen;

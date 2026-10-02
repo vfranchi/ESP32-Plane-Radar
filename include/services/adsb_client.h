@@ -94,41 +94,6 @@ bool targetValid();
 bool targetSnapshot(Aircraft* out);
 
 /**
- * Close the keep-alive session to the feed. The next area fetch re-handshakes.
- * Used as the last resort before a second TLS handshake: releasing this returns the
- * ~50 KB of mbedTLS record buffers a route lookup needs.
- */
-void releaseKeepAlive();
-
-/** Result of a callsign -> route lookup (adsbdb). */
-struct RouteLookup {
-  bool found = false;      // true when the answer carried a route
-  bool attempted = false;  // false only when the request was never made
-  bool low_block = false;  // the keep-alive had to be dropped to fit the handshake
-  char origin_iata[4] = {};
-  char origin_icao[5] = {};
-  char dest_iata[4] = {};
-  char dest_icao[5] = {};
-  float origin_lat = 0.0f;
-  float origin_lon = 0.0f;
-  float dest_lat = 0.0f;
-  float dest_lon = 0.0f;
-};
-
-/**
- * One-shot callsign -> route lookup on adsbdb (a different host from the feed, so it
- * pays its own TLS handshake and closes it before returning). Call it once per flight,
- * never per poll: the route data is static per callsign.
- *
- * Route dataset credit and restriction -- keep this note with any code that touches it:
- * "The flight route data is the work of David Taylor, Edinburgh and Jim Mason, Glasgow,
- * and may not be copied, published, or incorporated into other databases without the
- * explicit permission of David J Taylor, Edinburgh." We query it at runtime and keep a
- * few display fields; the dataset is never redistributed.
- */
-bool lookupRoute(const char* callsign, RouteLookup* out);
-
-/**
  * True while a fetch is in flight. Set on entry to fetchUpdate() and cleared on
  * every exit path, so a render loop on another task can show the activity dot.
  * A plain volatile bool is enough: the flag is advisory, so a stale read only

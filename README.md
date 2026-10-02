@@ -113,34 +113,28 @@ replaces the empty space below it.
   crawl. The whole scope moves: rings, runways, projection and fetch centre.
 - **Trail** — the last 64 fixes (about 5 minutes at the 5 s poll), drawn dim amber. A sample
   outside the scope breaks the line rather than being clipped onto the rim.
-- **Readout** — three lines: callsign and state on top (in the aircraft colour), then the route
-  and the current numbers.
+- **Readout** — two lines: callsign and state on top (in the aircraft colour), then the current
+  numbers.
 
-| State | Meaning | Third line |
-|-------|---------|-----------|
-| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `412kt eta 1h12` |
-| `ON GROUND` | Seen at the airport, never airborne yet this session | `0kt` |
-| `NOT LIVE` | Configured but not in the feed | `est 2h05` when the route is known, else `no fix from the feed` |
+| State | Meaning | Readout |
+|-------|---------|---------|
+| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `gs 412 kt` |
+| `ON GROUND` | Seen at the airport, never airborne yet this session | `gs 0 kt` |
+| `NOT LIVE` | Configured but not in the feed | `no position` plus the age of the last fix |
 | `LANDED` | Was airborne this session, now on the ground or gone | `block 1h05` |
 
 **Data sources.** Live positions come only from **adsb.fi** (`opendata.adsb.fi`), one request per
 second at most — the followed flight is looked up every poll, the surrounding traffic every third
-one. The route (origin → destination) is a separate, one-shot lookup on **adsbdb**
-(`api.adsbdb.com/v0/callsign/`) **when the target is set**, never per poll; the result is kept in
-RAM for 12 h or until the day rolls over, because a callsign is reused day to day with a different
-route pair. adsbdb is a different host, so it needs its own TLS handshake: if the largest free heap
-block is under 40 KB the feed's keep-alive is dropped first, and the lookup is skipped if that does
-not free enough.
+one. Nothing else is queried: the firmware shows what the feed reports, so there is no origin, no
+destination and no ETA. Both were dropped on purpose — callsign-to-route databases are static
+snapshots, and a reused callsign made them name the wrong city pair with confidence.
 
 **No wall clock.** The firmware has no SNTP and no RTC, so the readout shows durations, never clock
-times: `est` is derived from the route distance at 750 km/h, and `block` is the time observed
-airborne. "Landed at 14:32" cannot be printed without adding a time source.
+times: `block` is the time observed airborne, and `no position` carries the age of the last fix.
+"Landed at 14:32" cannot be printed without adding a time source.
 
-**Credit.** Flight route data is the work of David Taylor, Edinburgh and Jim Mason, Glasgow, and
-may not be copied, published or incorporated into other databases without the explicit permission
-of David J Taylor, Edinburgh. The firmware queries it at runtime and keeps a few display fields;
-the dataset is never redistributed. ADS-B data courtesy of [adsb.fi](https://adsb.fi) — please
-consider feeding them a receiver.
+**Credit.** ADS-B data courtesy of [adsb.fi](https://adsb.fi) — please consider feeding them a
+receiver.
 
 ## Configuration
 

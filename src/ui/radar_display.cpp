@@ -991,21 +991,11 @@ void layoutFollowPanel() {
   }
 
   snprintf(lines[line_count++], sizeof(lines[0]), "%s %s", info.id, status);
-  if (info.route_known) {
-    snprintf(lines[line_count++], sizeof(lines[0]), "%s > %s", info.origin,
-             info.destination);
-  }
 
   char duration[12] = {};
   switch (info.state) {
     case services::follow::State::kLive: {
       snprintf(lines[line_count++], sizeof(lines[0]), "gs %.0f kt", info.gs_knots);
-      const float eta_min = services::follow::etaMinutes(info.to_dest_km, info.gs_knots);
-      if (eta_min > 0.0f && line_count < 4) {
-        formatDuration(static_cast<unsigned long>(eta_min * 60000.0f), duration,
-                       sizeof(duration));
-        snprintf(lines[line_count++], sizeof(lines[0]), "eta %s", duration);
-      }
       break;
     }
     case services::follow::State::kLanded:
@@ -1028,14 +1018,6 @@ void layoutFollowPanel() {
           formatDuration(static_cast<unsigned long>(air_min * 60000.0f), duration,
                          sizeof(duration));
           snprintf(lines[line_count++], sizeof(lines[0]), "block %s", duration);
-        }
-      } else if (info.route_known && line_count < 4) {
-        // Not seen at all yet, but its route is known: the trip's own length is the estimate.
-        const float trip_min = services::follow::estimatedTripMinutes(info.route_km);
-        if (trip_min > 0.0f) {
-          formatDuration(static_cast<unsigned long>(trip_min * 60000.0f), duration,
-                         sizeof(duration));
-          snprintf(lines[line_count++], sizeof(lines[0]), "est trip %s", duration);
         }
       }
       break;

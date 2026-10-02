@@ -25,9 +25,6 @@ constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 // v2 only: the callsign/hex lookup paths do not exist under v3 (v3 answers 400, and an
 // invalid request still counts against the feed's rate limit).
 constexpr char kApiTargetBase[] = "https://opendata.adsb.fi/api/v2/";
-constexpr char kApiRouteBase[] = "https://api.adsbdb.com/v0/callsign/";
-/** Largest free block needed before a second (transient) TLS handshake is attempted. */
-constexpr size_t kRouteHandshakeMinBlock = 40 * 1024;
 constexpr float kKmPerNm = 1.852f;
 constexpr int kConnectTimeoutMs = 5000;  // TLS handshake needs room
 constexpr unsigned long kRequestTimeoutMs = 6000;
@@ -544,11 +541,6 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   return true;
 }
 
-void releaseKeepAlive() {
-  s_http.end();
-  s_client.stop();
-}
-
 unsigned long targetUpdateMs() { return s_target_update_ms; }
 
 bool targetValid() {
@@ -646,91 +638,6 @@ bool fetchTarget(const char* id, bool is_hex) {
   // "not in feed" is a state (the flight is not being tracked right now), not a failure.
   Serial.printf("adsb: target %s %s\n", id, have ? "found" : "not in feed");
   return true;
-}
-
-bool lookupRoute(const char* callsign, RouteLookup* out) {
-  if (out == nullptr) {
-    return false;
-  }
-  *out = RouteLookup{};
-  const char* cs = callsign != nullptr ? callsign : "";
-  if (cs[0] == '\0') {
-    return false;  // an empty callsign would be an invalid request
-  }
-  out->attempted = true;
-  const FetchInProgressGuard fetch_guard;
-
-  // adsbdb is not the feed's host, so this pays its own TLS handshake -- and two live
-  // TLS contexts do not fit next to the 57.6 KB frame sprite (the largest free block
-  // sits at 32-47 KB, one handshake's worth). If there is no room, drop the feed's
-  // keep-alive first: one lost reconnect is invisible, an allocation-failure storm is not.
-  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kRouteHandshakeMinBlock) {
-    const size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    releaseKeepAlive();
-    delay(50);  // let the socket teardown return its record buffers
-    const size_t after = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial.printf("adsbdb: block %u < %u, released the keep-alive, now %u\n",
-                  static_cast<unsigned>(before),
-                  static_cast<unsigned>(kRouteHandshakeMinBlock),
-                  static_cast<unsigned>(after));
-    // Flag it before any return: the caller must be able to tell "the heap said not now"
-    // from "the API answered", because only the second one deserves the long backoff.
-    out->low_block = true;
-    if (after < kRouteHandshakeMinBlock) {
-      Serial.println("adsbdb: still no room for a handshake, route left unknown");
-      return false;
-    }
-  }
-
-  // Function-local session on purpose: its destructor (and the explicit stop below)
-  // frees the two 16 KB mbedTLS record buffers before the next feed poll needs them.
-  WiFiClientSecure client;
-  HTTPClient http;
-
-  String url = kApiRouteBase;
-  url += cs;
-
-  JsonDocument filter;
-  filter["response"]["flightroute"]["origin"]["iata_code"] = true;
-  filter["response"]["flightroute"]["origin"]["icao_code"] = true;
-  filter["response"]["flightroute"]["origin"]["latitude"] = true;
-  filter["response"]["flightroute"]["origin"]["longitude"] = true;
-  filter["response"]["flightroute"]["destination"]["iata_code"] = true;
-  filter["response"]["flightroute"]["destination"]["icao_code"] = true;
-  filter["response"]["flightroute"]["destination"]["latitude"] = true;
-  filter["response"]["flightroute"]["destination"]["longitude"] = true;
-
-  JsonDocument doc;
-  const bool answered =
-      getJsonDocument(client, http, url, "adsbdb", doc, filter, /*keep_alive=*/false, nullptr);
-  http.end();
-  client.stop();  // not retained: frees the record buffers immediately
-  if (!answered) {
-    return false;
-  }
-
-  JsonObject route = doc["response"]["flightroute"];
-  if (route.isNull()) {
-    return false;  // the 404 body is {"response":"unknown callsign"}
-  }
-  const JsonObject origin = route["origin"];
-  const JsonObject dest = route["destination"];
-  copyJsonStringTrimmed(origin, "iata_code", out->origin_iata, sizeof(out->origin_iata));
-  copyJsonStringTrimmed(origin, "icao_code", out->origin_icao, sizeof(out->origin_icao));
-  copyJsonStringTrimmed(dest, "iata_code", out->dest_iata, sizeof(out->dest_iata));
-  copyJsonStringTrimmed(dest, "icao_code", out->dest_icao, sizeof(out->dest_icao));
-  readJsonFloat(origin, "latitude", &out->origin_lat);
-  readJsonFloat(origin, "longitude", &out->origin_lon);
-  readJsonFloat(dest, "latitude", &out->dest_lat);
-  readJsonFloat(dest, "longitude", &out->dest_lon);
-  out->found = out->dest_iata[0] != '\0' || out->dest_icao[0] != '\0';
-
-  Serial.printf("adsbdb: route %s > %s %s, largest block %u\n",
-                out->origin_iata[0] != '\0' ? out->origin_iata : out->origin_icao,
-                out->dest_iata[0] != '\0' ? out->dest_iata : out->dest_icao,
-                out->found ? "ok" : "unavailable",
-                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-  return out->found;
 }
 
 }  // namespace services::adsb

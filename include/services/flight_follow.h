@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstddef>
 
-// Follow-a-flight mode: target identity, session state, trail and ETA maths.
+// Follow-a-flight mode: target identity, session state and trail.
 //
 // Free of Arduino, NVS and LovyanGFX so scripts/run_host_tests.sh can compile it
 // straight with the host compiler: the part that decides *what* to show is testable
@@ -11,35 +11,12 @@
 namespace services::follow {
 
 constexpr size_t kIdLen = 9;      // callsign (8 + NUL) or 6 hex + NUL
-constexpr size_t kIataLen = 4;    // IATA code + NUL
-constexpr size_t kCodeLen = 5;    // IATA (3) or ICAO (4) + NUL
 constexpr size_t kTrailMax = 64;  // ~5.3 min of trail at the 5 s poll
 
-constexpr float kKmPerDeg = 111.0f;
-constexpr float kKmPerKnot = 1.852f;
-/** Nominal cruise for a flight that has not departed: an estimate, labelled as one. */
-constexpr float kCruiseKmh = 750.0f;
 /** Below this ground speed the aircraft is taxiing: treat it as on the ground. */
 constexpr float kAirborneGsKnots = 40.0f;
 /** Trail samples closer than this to the previous one are jitter, not motion. */
 constexpr float kTrailMinMoveKm = 0.1f;
-/** Cached route lifetime. A callsign is reused day to day, hence also the day check. */
-constexpr unsigned long kRouteTtlMs = 12UL * 60UL * 60UL * 1000UL;
-/** Minimum spacing between failed route lookups: never hammer a foreign API. */
-constexpr unsigned long kRouteRetryMs = 300000UL;
-/**
- * Retry window after a lookup that never got to run because the heap had no room for the
- * TLS handshake. The heap frees up as buffers are recycled, so a minute is enough -- waiting
- * the full failure window would leave the route (and the ETA) missing for five minutes.
- */
-constexpr unsigned long kRouteDeferMs = 60000UL;
-/**
- * Per-poll movement (km) that counts as real progress rather than position jitter.
- * At 400 kt an aircraft covers ~1 km per 5 s poll, so this is well inside the signal.
- */
-constexpr float kRouteTrendKm = 0.3f;
-/** Consecutive polls of the same trend before the route ends are swapped (~15 s). */
-constexpr int kRouteTrendPolls = 3;
 
 enum class State {
   kIdle,      // no target configured
@@ -175,22 +152,6 @@ struct Session {
   }
 };
 
-/** Estimated time to go, in minutes; negative when the inputs are unusable. */
-inline float etaMinutes(float to_dest_km, float gs_knots) {
-  if (gs_knots <= 0.0f || to_dest_km <= 0.0f) {
-    return -1.0f;
-  }
-  return to_dest_km / (gs_knots * kKmPerKnot) * 60.0f;
-}
-
-/** Estimated block time for a flight that has not departed. */
-inline float estimatedTripMinutes(float route_km) {
-  if (route_km <= 0.0f) {
-    return -1.0f;
-  }
-  return route_km / kCruiseKmh * 60.0f;
-}
-
 /** Haversine: called once per poll, never per redraw (soft-float sqrtf/atan2f). */
 inline float greatCircleKm(float lat1, float lon1, float lat2, float lon2) {
   const float kDegToRad = 3.14159265f / 180.0f;
@@ -201,26 +162,6 @@ inline float greatCircleKm(float lat1, float lon1, float lat2, float lon2) {
                       sinf(dlon * 0.5f) * sinf(dlon * 0.5f);
   const float c = 2.0f * atan2f(sqrtf(a), sqrtf(1.0f - a));
   return 6371.0f * c;
-}
-
-/**
- * True when two consecutive distance samples say the route's ends are the wrong way round.
- *
- * The physical fact is that a destination's distance has to shrink. A per-callsign API names
- * the city pair in both directions, so its answer can be the other leg -- and then the stored
- * destination's distance grows while the airport behind the aircraft shrinks. Measuring that
- * beats comparing bearings: a bearing is meaningless within a couple of km of an airport, and
- * one bad heading sample would flip the display with nothing to flip it back.
- */
-inline bool routeTrendSaysReversed(float prev_dest_km, float prev_origin_km, float now_dest_km,
-                                   float now_origin_km, float min_km = kRouteTrendKm) {
-  return (now_dest_km - prev_dest_km) > min_km && (now_origin_km - prev_origin_km) < -min_km;
-}
-
-/** True when the aircraft is closing on the stored destination: the route is right as filed. */
-inline bool routeTrendSaysClosing(float prev_dest_km, float prev_origin_km, float now_dest_km,
-                                  float now_origin_km, float min_km = kRouteTrendKm) {
-  return (now_dest_km - prev_dest_km) < -min_km && (now_origin_km - prev_origin_km) > min_km;
 }
 
 /** Ring buffer of world positions; index 0 is always the oldest sample. */
@@ -267,85 +208,12 @@ struct Trail {
   }
 };
 
-/**
- * Purely computational half of the route lookup: when is a cached route still good, and
- * when should another one be fetched.
- *
- * The day is part of the route's identity because the same callsign flies a different
- * city pair on a different day, so a TTL alone would serve yesterday's airports.
- */
-struct RouteCache {
-  bool valid = false;
-  unsigned long fetched_ms = 0;
-  unsigned long fetched_day = 0;
-  bool attempted = false;
-  unsigned long last_attempt_ms = 0;
-  /** Window before the next attempt; shortened by defer() when the lookup was skipped. */
-  unsigned long retry_ms = kRouteRetryMs;
-
-  void reset() { *this = RouteCache(); }
-
-  bool usableAt(unsigned long now_ms, unsigned long day) const {
-    if (!valid) {
-      return false;
-    }
-    if (day != fetched_day) {
-      return false;  // a new day: the callsign may be flying somewhere else now
-    }
-    return (now_ms - fetched_ms) < kRouteTtlMs;
-  }
-
-  bool wantedAt(unsigned long now_ms, unsigned long day, bool target_is_hex) const {
-    if (target_is_hex) {
-      return false;  // adsbdb resolves callsigns, not ICAO hex addresses
-    }
-    if (usableAt(now_ms, day)) {
-      return false;
-    }
-    if (attempted && (now_ms - last_attempt_ms) < retry_ms) {
-      return false;  // failed recently: back off
-    }
-    return true;
-  }
-
-  void noteAttempt(unsigned long now_ms) {
-    attempted = true;
-    last_attempt_ms = now_ms;
-    retry_ms = kRouteRetryMs;
-  }
-
-  /**
-   * The lookup never ran (no room for the handshake). Unlike fail(), this keeps whatever
-   * route is already known -- an aged route still beats a blank panel -- and only pushes the
-   * next try out by the short window.
-   */
-  void defer(unsigned long now_ms) {
-    attempted = true;
-    last_attempt_ms = now_ms;
-    retry_ms = kRouteDeferMs;
-  }
-
-  void succeed(unsigned long now_ms, unsigned long day) {
-    valid = true;
-    fetched_ms = now_ms;
-    fetched_day = day;
-  }
-
-  void fail() { valid = false; }
-};
-
 // --- stateful API, implemented in src/services/flight_follow.cpp ---
 
-/** Everything the info panel needs, refreshed by onReport()/setRoute(). */
+/** Everything the info panel needs, refreshed by onReport(). */
 struct Info {
   State state = State::kIdle;
   char id[kIdLen] = {};
-  /** Resolved airport code: the IATA one when the route data has it, else the ICAO one. */
-  char origin[kCodeLen] = {};
-  char destination[kCodeLen] = {};
-  bool route_known = false;
-  float route_km = 0.0f;    // origin -> destination
-  float to_dest_km = 0.0f;  // aircraft -> destination, 0 when unknown
   float gs_knots = 0.0f;
   /** Minutes since the feed last had this aircraft; 0 while it is being reported. */
   float since_seen_min = 0.0f;
@@ -370,23 +238,5 @@ const Trail& trail();
 /** Feed one target poll result: state, session, trail and info all follow from it. */
 void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,
               unsigned long now_ms);
-
-/** Route lookup result (adsbdb): resolved airport codes plus both airport positions. */
-void setRoute(const char* origin_code, const char* dest_code, float origin_lat, float origin_lon,
-              float dest_lat, float dest_lon, float route_km);
-
-/** True while the route should be (re)fetched: no usable route and the retry window passed. */
-bool routeWanted();
-void noteRouteAttempt();
-void noteRouteFailure();
-/** The lookup could not run for lack of heap: keep any known route, try again in ~1 min. */
-void noteRouteDeferred();
-
-/**
- * Day number for the route cache. This project has no wall clock (no SNTP, no RTC), so a
- * "day" is boot-relative: millis() rolled up. Consequence, on purpose: the 12 h TTL is what
- * really ages a route, and the day rule only catches a reboot.
- */
-unsigned long currentDay();
 
 }  // namespace services::follow

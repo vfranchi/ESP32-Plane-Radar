@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "services/adsb_client.h"
+#include "services/flight_follow.h"
 #include "services/mqtt_config.h"
 #include "services/mqtt_discovery.h"
 #include "services/nearest_aircraft.h"
@@ -122,6 +123,13 @@ void publishLocationState() {
   publishStateTopic("lon", buf, false);
 }
 
+/** The followed flight, editable from HA. The board normalizes the id (trim +
+ *  upper-case) and rejects nonsense, so this is what it actually follows: a
+ *  double tap clears the target and HA must not keep showing the old callsign. */
+void publishFollowState() {
+  publishStateTopic("follow", services::follow::target().id, false);
+}
+
 /** Every controllable/reported value once, so HA holds real states instead of
  *  'unknown' before the first command. */
 void publishAllStates() {
@@ -130,6 +138,7 @@ void publishAllStates() {
   publishSwitchState("runways", ui::radar::showRunways());
   publishSwitchState("debug", ui::radar::debugOverlay());
   publishLocationState();
+  publishFollowState();
 }
 
 void publishTelemetry() {
@@ -165,6 +174,10 @@ void publishTelemetry() {
       Serial.println("MQTT: info publish failed");
     }
   }
+
+  // Cheap and it keeps the editable field honest: the button can clear the target
+  // behind HA's back (double tap), and a stale id cannot be re-set to itself.
+  publishFollowState();
 }
 
 void handleCommand(char* topic, const char* value) {
@@ -207,6 +220,9 @@ void handleCommand(char* topic, const char* value) {
     // Re-publish the truth, not the request: an invalid value must not show
     // as applied in Home Assistant.
     publishLocationState();
+  } else if (std::strcmp(key, "follow") == 0) {
+    services::follow::setTargetFromPortal(value);
+    publishFollowState();
   } else {
     Serial.printf("MQTT: unknown command topic %s\n", topic);
     return;
@@ -277,8 +293,8 @@ void connectBroker() {
 
   // Reconnecting after the fetch borrowed the socket must not replay the
   // discovery burst: it is retained in the broker and HA already has the
-  // entities. Refreshing once a minute is cheap insurance against a broker
-  // that restarted and lost the retained topics.
+  // entities. A periodic refresh is cheap insurance against a broker that
+  // restarted and lost the retained topics.
   const bool discovery_fresh =
       s_discovery_done_ms != 0 &&
       (millis() - s_discovery_done_ms) < config::kMqttDiscoveryRefreshMs;
@@ -304,6 +320,17 @@ static_assert(MQTT_MAX_PACKET_SIZE == config::kMqttPacketSize,
               "MQTT_MAX_PACKET_SIZE must match config::kMqttPacketSize");
 
 void init() {
+  // init() runs again on every portal save, so it cannot assume it is booting: the
+  // socket Home Assistant is watching is still open, and loop() is about to stop
+  // driving it. A clean DISCONNECT suppresses the will and an undriven session never
+  // loses its socket, so say goodbye on the old base before anything changes.
+  if (s_mqtt.connected()) {
+    std::snprintf(s_topic, sizeof(s_topic), "%s/status", s_base);
+    s_mqtt.publish(s_topic, "offline", true);
+    s_mqtt.disconnect();
+  } else {
+    s_net.stop();  // a socket left over from a failed reconnect, if any
+  }
   loadConfig(s_cfg);
   buildTopics();
   // The failure this feature walks closest to is a TLS handshake that cannot
@@ -326,6 +353,13 @@ void init() {
   s_mqtt.setServer(s_cfg.host, s_cfg.port);
   s_mqtt.setCallback(onMessage);
   s_mqtt.setBufferSize(config::kMqttPacketSize);
+  // A saved config can rename the base topic, the discovery prefix or the device, so
+  // the retained configs HA is holding no longer match what we are about to publish.
+  // Reset the burst instead of waiting out kMqttDiscoveryRefreshMs with no entities.
+  // Boot already starts at zero; only a portal save can arrive with these set.
+  s_discovery_done_ms = 0;
+  s_discovery_index = 0;
+  s_last_discovery_ms = 0;
   s_state = State::WaitingLink;
   Serial.printf("MQTT: node %s client %s broker %s:%u topic '%s' prefix '%s'\n", s_node,
                 s_client_id, s_cfg.host, s_cfg.port, s_base, s_ctx.prefix);

@@ -27,6 +27,7 @@ enum class Entity : uint8_t {
   Rssi,
   HeapFree,
   Info,
+  FollowId,
   Count,
 };
 
@@ -101,17 +102,18 @@ constexpr Spec kSpecs[] = {
     {"sensor", "rssi", "Wi-Fi RSSI"},
     {"sensor", "heap_free", "Free heap"},
     {"sensor", "info", "Radar info"},
+    {"text", "follow", "Follow flight"},
 };
 
 constexpr const char* kStateTopic[] = {
     "~/state/range",  "~/state/miles",  "~/state/runways",  "~/state/debug",
     "~/state/lat",    "~/state/lon",    "~/state/ac_count", "~/state/nearest",
-    "~/state/rssi",   "~/state/heap",   "~/state/info"};
+    "~/state/rssi",   "~/state/heap",   "~/state/info",     "~/state/follow"};
 
 constexpr const char* kCmdTopic[] = {
     "~/cmd/range", "~/cmd/miles", "~/cmd/runways", "~/cmd/debug",
     "~/cmd/lat",   "~/cmd/lon",   nullptr,         nullptr,
-    nullptr,       nullptr,       nullptr};
+    nullptr,       nullptr,       nullptr,         "~/cmd/follow"};
 
 /** Entity-specific keys, appended right after availability. No trailing comma. */
 inline void addEntityData(Writer& w, Entity e) {
@@ -165,6 +167,11 @@ inline void addEntityData(Writer& w, Entity e) {
       w.add("\"json_attr_t\":\"~/state/info\","
             "\"val_t\":\"{{ value_json.ip }}\",\"ent_cat\":\"diagnostic\","
             "\"ic\":\"mdi:information-outline\"");
+      break;
+    case Entity::FollowId:
+      // HA's text platform drops the entity when `max` is missing. A callsign is
+      // 8 characters and a Mode-S hex 6, so 12 is slack, not a value to tune.
+      w.add("\"max\":12,\"ic\":\"mdi:airplane-search\",\"ent_cat\":\"config\"");
       break;
     case Entity::Count:
       break;

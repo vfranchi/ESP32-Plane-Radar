@@ -16,6 +16,12 @@ struct Aircraft {
    * fly the aircraft due north, so the caller must not extrapolate.
    */
   bool track_valid;
+  /**
+   * True when the feed says the airframe is on the ground -- either literally ("ground")
+   * or a numeric altitude at apron level. Some receivers report a taxiing aircraft as
+   * "0 ft" rather than "ground", and a fast taxi then looks airborne by ground speed alone.
+   */
+  bool on_ground;
   float gs_knots;
   /** Age of the position fix at fetch time (ms), from the feed's seen_pos.
    *  Added to the elapsed time when dead-reckoning so the drawn position
@@ -58,6 +64,34 @@ const NearestAircraft& nearest();
  * newer positions from track_deg/gs_knots and the elapsed time.
  */
 unsigned long lastUpdateMs();
+
+/**
+ * millis() timestamp of the last successful *target* lookup. Kept apart from
+ * lastUpdateMs() on purpose: the area list and the followed aircraft are refreshed at
+ * different rates (every 3rd poll vs every poll), and one shared base time would make
+ * each set of aircraft dead-reckon from the other's fetch moment.
+ */
+unsigned long targetUpdateMs();
+
+/**
+ * Look one aircraft up by callsign or ICAO hex (adsb.fi v2 -- v3 has no such path and
+ * answers 400, which also counts against the feed's rate limit). Fills a slot separate
+ * from the area list, so following a flight never disturbs the surrounding traffic.
+ *
+ * Same host as the area fetch, so it rides the existing keep-alive session instead of
+ * paying a second TLS handshake and a second pair of 16 KB mbedTLS record buffers.
+ * Covered by the same in-flight guard the watchdog reads.
+ *
+ * Returns false only when the request could not be made at all. An empty answer
+ * (`"total": 0`) is a state -- the flight is not being tracked right now -- not an error.
+ */
+bool fetchTarget(const char* id, bool is_hex);
+
+/** True while the last target lookup produced an aircraft. */
+bool targetValid();
+
+/** Copy of the followed aircraft, taken under the same lock as the area list. */
+bool targetSnapshot(Aircraft* out);
 
 /**
  * True while a fetch is in flight. Set on entry to fetchUpdate() and cleared on

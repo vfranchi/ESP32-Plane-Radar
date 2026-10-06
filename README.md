@@ -18,7 +18,11 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
 | Action | Effect |
 |--------|--------|
 | **Short tap** | Cycle range preset (5 → 10 → 15 → 25 km); saved to flash |
-| **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
+| **Double tap** | Stop following the flight (`follow_id` cleared). Only with a flight followed: otherwise the second tap is swallowed, never a double range change |
+| **Hold 3 s** | Clear Wi‑Fi, location, units, follow target and MQTT config; reboot into setup portal |
+
+A single tap is held back for **350 ms** (`kDoubleTapWindowMs`) so a second one can cancel it;
+that is why the range changes just after the tap, not during it.
 
 During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
 
@@ -44,6 +48,7 @@ The same portal runs on the setup AP and on the device’s LAN IP while connecte
 | **Latitude / Longitude** | Radar center and ADS-B query position (defaults in `config.h` until set) |
 | **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
 | **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
+| **Follow flight** | Callsign (e.g. `GLO1724`) or Mode-S hex (6 hex digits) of the flight to follow. **Blank = off** |
 | **Publish to Home Assistant (MQTT)** | Master switch. **Off by default**: with no broker host the radar never tries to connect |
 | **MQTT broker host / port** | Broker address; port empty = `1883`. Plain TCP only (see below) |
 | **MQTT username / password** | Broker credentials, stored in NVS. Sent only to the broker |
@@ -98,6 +103,39 @@ As range decreases (or aircraft approach), targets move inward; beyond-ring dots
 - Poll interval: `kAdsbFetchIntervalMs` (5 s) in `config.h`
 - Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
 
+### Follow a flight
+
+Set **Follow flight** in the portal and the radar stops watching the neighbourhood and starts
+watching one aircraft: the scope recentres on it, its path is drawn behind it, and a readout
+replaces the empty space below it.
+
+- **Recentring** — every frame, with a **6 px dead-band** so a jittery fix cannot make the rings
+  crawl. The whole scope moves: rings, runways, projection and fetch centre.
+- **Trail** — the last 64 fixes (about 5 minutes at the 5 s poll), drawn dim amber. A sample
+  outside the scope breaks the line rather than being clipped onto the rim.
+- **Readout** — two lines: callsign and state on top (in the aircraft colour), then the current
+  numbers.
+
+| State | Meaning | Readout |
+|-------|---------|---------|
+| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `gs 412 kt` |
+| `ON GROUND` | Seen at the airport, never airborne yet this session | `gs 0 kt` |
+| `NOT LIVE` | Configured but not in the feed | `no position` plus the age of the last fix |
+| `LANDED` | Was airborne this session, now on the ground or gone | `block 1h05` |
+
+**Data sources.** Live positions come only from **adsb.fi** (`opendata.adsb.fi`), one request per
+second at most — the followed flight is looked up every poll, the surrounding traffic every third
+one. Nothing else is queried: the firmware shows what the feed reports, so there is no origin, no
+destination and no ETA. Both were dropped on purpose — callsign-to-route databases are static
+snapshots, and a reused callsign made them name the wrong city pair with confidence.
+
+**No wall clock.** The firmware has no SNTP and no RTC, so the readout shows durations, never clock
+times: `block` is the time observed airborne, and `no position` carries the age of the last fix.
+"Landed at 14:32" cannot be printed without adding a time source.
+
+**Credit.** ADS-B data courtesy of [adsb.fi](https://adsb.fi) — please consider feeding them a
+receiver.
+
 ## Configuration
 
 Edit **`include/config.h`** for hardware and behavior:
@@ -118,7 +156,7 @@ Range presets: `include/ui/radar_range.h` (`kRangePresets`).
 
 The radar can publish itself to Home Assistant over MQTT with **auto-discovery**: no YAML on the HA
 side, no entity to declare by hand. Fill in the MQTT fields in the config portal (see above), enable
-**Publish to Home Assistant**, and the device appears as one HA device with eleven entities.
+**Publish to Home Assistant**, and the device appears as one HA device with twelve entities.
 
 - **Discovery topics:** `<prefix>/<component>/<node>/<object>/config` (retained), where `<node>` is
   the base topic with `/` replaced by `_`, e.g. `homeassistant/select/planeradar_a1b2c3/range/config`.
@@ -138,6 +176,7 @@ side, no entity to declare by hand. Fill in the MQTT fields in the config portal
 | Wi-Fi RSSI | `sensor` | dBm |
 | Free heap | `sensor` | Bytes; the radar skips telemetry below `kMqttMinFreeHeap` |
 | Radar info | `sensor` | IP as state, SSID/uptime/firmware as attributes |
+| Follow flight | `text` | Callsign (e.g. `GLO1724`) or Mode-S hex of the flight to follow; **blank = off**. Same field as the portal, settable from HA |
 
 Commands are applied to NVS and **re-published as state**, so HA always shows the value the radar
 actually accepted (an out-of-range coordinate is rejected, not echoed back).
@@ -174,6 +213,8 @@ include/
     mqtt_config.h          — the 8 portal fields in NVS
     mqtt_discovery.h       — pure discovery payload builders (host-tested)
     nearest_aircraft.h     — pure distance math (host-tested)
+    flight_follow.h        — follow-target identity, session state, trail, ETA math (host-tested)
+    flight_follow.cpp      — the same, plus NVS and the live state
 data/
   ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/

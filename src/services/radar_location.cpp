@@ -17,6 +17,12 @@ constexpr char kKeyLon[] = "lon";
 double s_lat = config::kDefaultRadarLat;
 double s_lon = config::kDefaultRadarLon;
 
+// Follow-mode centre override. float, not double: a 32-bit store is atomic on RV32, so the
+// fetch task can never read half of a double written by the render task.
+float s_follow_lat = 0.0f;
+float s_follow_lon = 0.0f;
+volatile bool s_follow_active = false;
+
 bool parseCoord(const char* text, double* out) {
   if (text == nullptr || text[0] == '\0') {
     return false;
@@ -64,6 +70,20 @@ double lat() { return s_lat; }
 
 double lon() { return s_lon; }
 
+double centerLat() { return s_follow_active ? static_cast<double>(s_follow_lat) : s_lat; }
+
+double centerLon() { return s_follow_active ? static_cast<double>(s_follow_lon) : s_lon; }
+
+void setFollowCenter(float lat, float lon) {
+  s_follow_lat = lat;   // coordinates first: the reader only trusts them once the flag is set
+  s_follow_lon = lon;
+  s_follow_active = true;
+}
+
+void clearFollowCenter() { s_follow_active = false; }
+
+bool followCenterActive() { return s_follow_active; }
+
 bool saveFromStrings(const char* lat_str, const char* lon_str) {
   double lat = 0.0;
   double lon = 0.0;
@@ -79,6 +99,7 @@ bool saveFromStrings(const char* lat_str, const char* lon_str) {
 }
 
 void clear() {
+  clearFollowCenter();  // a location reset must not leave a follow override behind
   Preferences prefs;
   prefs.begin(kPrefsNamespace, false);
   prefs.remove(kKeyLat);

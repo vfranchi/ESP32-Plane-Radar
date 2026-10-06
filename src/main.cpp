@@ -5,10 +5,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <cstring>
+
 #include "config.h"
 #include "hardware/display.h"
 #include "services/adsb_client.h"
 #include "services/fetch_watchdog.h"
+#include "services/flight_follow.h"
 #include "services/mqtt_client.h"
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
@@ -46,11 +49,64 @@ void onRangeTap() {
   }
 }
 
+// A single BOOT tap cycles the range, but it is held back for one double-tap window so a
+// second tap can cancel it: without the delay the first tap has already changed the range
+// by the time the second one arrives. With no flight followed the double tap is swallowed
+// rather than cycling twice -- invisible to the user, and the gesture stays unambiguous.
+constexpr unsigned long kDoubleTapWindowMs = 350;
+bool g_tap_pending = false;
+unsigned long g_tap_pending_ms = 0;
+
 void handleBootButton() {
   bootButtonPollLongPress();
+
   if (bootButtonConsumeTap()) {
+    const unsigned long since = millis() - g_tap_pending_ms;
+    if (g_tap_pending && since <= kDoubleTapWindowMs) {
+      g_tap_pending = false;
+      if (services::follow::target().active) {
+        services::follow::reset();
+        Serial.println("follow: stopped by BOOT double tap");
+      }
+      return;
+    }
+    if (g_tap_pending) {
+      g_tap_pending = false;  // the window had already run out: deliver it now
+      onRangeTap();
+    }
+    g_tap_pending = true;
+    g_tap_pending_ms = millis();
+    return;
+  }
+
+  if (g_tap_pending && (millis() - g_tap_pending_ms) > kDoubleTapWindowMs) {
+    g_tap_pending = false;
     onRangeTap();
   }
+}
+
+/**
+ * 'T' on the serial port followed by a callsign or hex code sets the followed flight.
+ * A bench convenience -- the config portal is the real path -- and it is the only way to
+ * aim follow mode at a flight without opening the portal.
+ */
+void readFollowTargetFromSerial() {
+  char buf[services::follow::kIdLen] = {};
+  size_t n = 0;
+  const unsigned long deadline = millis() + 1000;
+  while (millis() < deadline && n + 1 < sizeof(buf)) {
+    if (Serial.available() > 0) {
+      const int c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        break;
+      }
+      buf[n++] = static_cast<char>(c);
+    } else {
+      delay(5);
+    }
+  }
+  buf[n] = '\0';
+  services::follow::setTargetFromPortal(buf);
 }
 
 // ADS-B fetch runs on its own task: the HTTPS request blocks for ~1-2 s, and
@@ -58,14 +114,41 @@ void handleBootButton() {
 // 4 Hz throughout. The task publishes into the shared aircraft buffer under a
 // lock; the render loop reads a snapshot.
 void adsbFetchTask(void*) {
+  unsigned poll = 0;
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
-      // The MQTT client stays connected across the fetch: halving the frame
-      // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what
-      // the 2x16 KB mbedtls buffers need, so no yield is necessary any more.
-      services::adsb::fetchUpdate(services::location::lat(),
-                                  services::location::lon(),
-                                  ui::radar::fetchRadiusKm());
+      if (services::follow::target().active) {
+        // The followed flight is the whole point, so it is looked up every poll. The
+        // surrounding traffic only needs refreshing now and then, which is what keeps
+        // this inside the feed's one-request-per-second limit.
+        const services::follow::Target& tgt = services::follow::target();
+        services::adsb::fetchTarget(tgt.id, tgt.is_hex);
+
+        services::adsb::Aircraft target{};
+        const bool found = services::adsb::targetSnapshot(&target);
+        // Fast and off the apron: that is "live". Ground speed alone is not enough -- a
+        // taxiing jet passes 40 kt, and a receiver that reports it at "0 ft" instead of
+        // "ground" would otherwise make a landed airframe look airborne.
+        const bool airborne = found &&
+                              target.gs_knots >= services::follow::kAirborneGsKnots &&
+                              !target.on_ground;
+        services::follow::onReport(found, airborne, target.lat, target.lon,
+                                   target.gs_knots, millis());
+
+        if (poll % 3 == 0) {
+          services::adsb::fetchUpdate(services::location::centerLat(),
+                                      services::location::centerLon(),
+                                      ui::radar::fetchRadiusKm());
+        }
+      } else {
+        // The MQTT client stays connected across the fetch: halving the frame
+        // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what
+        // the 2x16 KB mbedtls buffers need, so no yield is necessary any more.
+        services::adsb::fetchUpdate(services::location::centerLat(),
+                                    services::location::centerLon(),
+                                    ui::radar::fetchRadiusKm());
+      }
+      ++poll;
     }
     vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
   }
@@ -124,6 +207,7 @@ void setup() {
   services::location::init();
   ui::radar::rangeInit();
   services::adsb::init();
+  services::follow::init();
   services::mqtt::init();
 
   if (wifiSetupConnect()) {
@@ -138,9 +222,14 @@ void setup() {
 void loop() {
   handleBootButton();
 
-  // 'F' on the serial port dumps the frame sprite (see ui::radarDisplayDumpFrame).
-  if (Serial.available() > 0 && Serial.read() == 'F') {
-    ui::radarDisplayDumpFrame();
+  if (Serial.available() > 0) {
+    const int cmd = Serial.read();
+    if (cmd == 'F') {
+      // Dumps the frame sprite (see ui::radarDisplayDumpFrame).
+      ui::radarDisplayDumpFrame();
+    } else if (cmd == 'T') {
+      readFollowTargetFromSerial();
+    }
   }
   wifiLoop();
   adsbWatchdog();

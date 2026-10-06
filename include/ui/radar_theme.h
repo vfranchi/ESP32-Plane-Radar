@@ -76,6 +76,21 @@ constexpr int kBeyondRingDotRadiusPx = 4;
 constexpr int kBeyondRingScreenMarginPx = 2;
 /** Target cap height (px) for aircraft tags (bold, slightly above scale label). */
 constexpr int kAircraftTagLabelHeightPx = 13;
+/** Follow trail: the aircraft colour, pre-blended over the radar background (~45%). */
+constexpr uint8_t kTrailR = 115;
+constexpr uint8_t kTrailG = 97;
+constexpr uint8_t kTrailB = 42;
+
+/** Follow info panel: a 3-line plate just above the "S" cardinal label. */
+constexpr int kFollowPanelPadXPx = 4;
+constexpr int kFollowPanelPadYPx = 2;
+constexpr int kFollowPanelLineGapPx = 1;
+/** Keep clear of the "S" glyph: text datum bottom_center at the screen edge. */
+constexpr int kFollowPanelBottomMarginPx = 26;
+/** Trail stroke (~2 px), matching the grid weight. */
+constexpr float kFollowTrailHalfWidth = 1.0f;
+/** Recentre the radar only once the followed aircraft has drifted this far (px). */
+constexpr int kFollowDeadBandPx = 6;
 
 /** RGB565 palette targets (applied in initPalette). */
 constexpr uint8_t kBgR = 4;
@@ -120,5 +135,7 @@ extern uint16_t kColorTagType;
 extern uint16_t kColorTagAltitude;
 extern uint16_t kColorRunway;
 extern uint16_t kColorRunwayLabel;
+/** Follow trail: the aircraft colour dimmed toward the background. */
+extern uint16_t kColorTrail;
 
 }  // namespace ui::radar

@@ -56,8 +56,8 @@ size_t s_last_airport_count = 0;
 size_t s_last_runway_draw_count = 0;
 
 bool cacheIsStale(float outer_km) {
-  return s_cache.center_lat != services::location::lat() ||
-         s_cache.center_lon != services::location::lon() ||
+  return s_cache.center_lat != services::location::centerLat() ||
+         s_cache.center_lon != services::location::centerLon() ||
          s_cache.outer_km != outer_km;
 }
 
@@ -286,8 +286,8 @@ void airportLabelPos(const data::large_airports::Airport& ap, CachedLabel* out) 
 // Expensive (soft-float projection over 1166 airports) so it only runs when the
 // centre or the range changes.
 void rebuildCache(float radius_km, float outer_km) {
-  s_cache.center_lat = services::location::lat();
-  s_cache.center_lon = services::location::lon();
+  s_cache.center_lat = services::location::centerLat();
+  s_cache.center_lon = services::location::centerLon();
   s_cache.outer_km = outer_km;
   s_cache.airport_count = 0;
   s_cache.runway_count = 0;

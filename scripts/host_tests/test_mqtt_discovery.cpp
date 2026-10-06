@@ -77,6 +77,23 @@ int main() {
   // Buffer too small must report 0 rather than truncate silently.
   CHECK(services::mqtt::discoveryPayload(Entity::Range, kCtx, payload, 16) == 0);
 
+  // Follow target: an editable text entity, so the flight can be set from HA
+  // instead of walking to the board's portal.
+  {
+    const size_t n = services::mqtt::discoveryPayload(Entity::FollowId, kCtx, payload,
+                                                      sizeof(payload));
+    CHECK(n > 0 && balanced(payload));
+    CHECK(std::strstr(payload, "\"cmd_t\":\"~/cmd/follow\"") != nullptr);
+    CHECK(std::strstr(payload, "\"stat_t\":\"~/state/follow\"") != nullptr);
+    // HA's text platform DROPS the entity when `max` is absent -- same class of
+    // rule as the number step floor below.
+    CHECK(std::strstr(payload, "\"max\":12") != nullptr);
+    const size_t t =
+        services::mqtt::discoveryTopic(Entity::FollowId, kCtx, topic, sizeof(topic));
+    CHECK(t == std::strlen(topic));
+    CHECK(std::strcmp(topic, "homeassistant/text/planeradar_a1b2c3/follow/config") == 0);
+  }
+
   // Command payload parsing.
   CHECK(services::mqtt::leadingKm("25 km") == 25);
   CHECK(services::mqtt::leadingKm("10") == 10);

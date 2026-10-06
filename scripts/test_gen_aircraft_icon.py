@@ -61,10 +61,13 @@ def test_output_is_deterministic():
 
 
 def test_small_set_is_sized_and_packed():
-    assert gen.bytes_per_row(gen.ICON_PX_SMALL) == 6   # 11 px, 4bpp, 2 px/byte
-    assert gen.bytes_per_rot(gen.ICON_PX_SMALL) == 66
-    blob = gen.build(gen.ICON_PX_SMALL)
-    assert len(blob) == gen.ROTATIONS * gen.bytes_per_rot(gen.ICON_PX_SMALL)
+    size = gen.ICON_PX_SMALL
+    assert gen.bytes_per_row(size) == (size + 1) // 2   # 4bpp, 2 px/byte
+    assert gen.bytes_per_rot(size) == gen.bytes_per_row(size) * size
+    blob = gen.build(size)
+    assert len(blob) == gen.ROTATIONS * gen.bytes_per_rot(size)
+    # The firmware asserts this against radar::kPrivateAircraftIconSizePx at build
+    # time, so the size itself is left free to move here.
 
 
 def test_small_set_has_ink_in_every_rotation():

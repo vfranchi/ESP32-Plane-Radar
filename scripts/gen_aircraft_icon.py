@@ -21,10 +21,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ICON_PX = 19          # airliner icon: square bounding box, pixels
-# Private/light icon. Must stay equal to radar::kPrivateAircraftIconSizePx
-# (kAircraftIconSizePx * kPrivateAircraftScale, rounded); the firmware
-# static_asserts the two against each other, so a mismatch fails the build.
-ICON_PX_SMALL = 11
+# Private/light icon. Must stay equal to radar::kPrivateAircraftIconSizePx; the
+# firmware static_asserts the two against each other, so a mismatch fails the build.
+ICON_PX_SMALL = 13
 ROTATIONS = 72        # one every 5 degrees
 SUPERSAMPLE = 8       # rasterise at ICON_PX * SUPERSAMPLE, then downscale
 

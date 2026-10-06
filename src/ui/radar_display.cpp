@@ -33,6 +33,8 @@ uint16_t kColorCenter = 0xFFFF;
 uint16_t kColorFetchDot = 0xF800;
 uint16_t kColorAircraft = 0x001F;
 uint16_t kColorTrackVector = 0xFFFF;
+uint16_t kColorAircraftPrivate = 0x07E0;
+uint16_t kColorTrackVectorPrivate = 0xFD20;
 uint16_t kColorTagType = 0x5DFF;
 uint16_t kColorTagAltitude = 0xFFE0;
 uint16_t kColorRunway = 0x4D5F;
@@ -221,24 +223,29 @@ uint16_t panelColor565(uint8_t r, uint8_t g, uint8_t b) {
 
 // Must be a LovyanGFX colour class: pixelcopy calls pal[i].get().
 lgfx::rgb565_t s_icon_palette[16];
+lgfx::rgb565_t s_icon_palette_private[16];
 
 /**
- * Build the 16-entry icon palette: index 0 is the transparent key, 1..15 are the
+ * Build a 16-entry icon palette: index 0 is the transparent key, 1..15 are the
  * aircraft colour pre-blended over the radar background so the icon reads as
  * anti-aliased without any runtime alpha work.
  */
-void initAircraftIconPalette() {
+void fillIconPalette(lgfx::rgb565_t* pal, uint8_t r0, uint8_t g0, uint8_t b0) {
   for (int i = 1; i < 16; ++i) {
     const int a = (i * 255) / 15;
-    const uint8_t r = static_cast<uint8_t>(
-        (radar::kAircraftR * a + radar::kBgR * (255 - a)) / 255);
-    const uint8_t g = static_cast<uint8_t>(
-        (radar::kAircraftG * a + radar::kBgG * (255 - a)) / 255);
-    const uint8_t b = static_cast<uint8_t>(
-        (radar::kAircraftB * a + radar::kBgB * (255 - a)) / 255);
-    s_icon_palette[i] = panelColor565(r, g, b);
+    const uint8_t r = static_cast<uint8_t>((r0 * a + radar::kBgR * (255 - a)) / 255);
+    const uint8_t g = static_cast<uint8_t>((g0 * a + radar::kBgG * (255 - a)) / 255);
+    const uint8_t b = static_cast<uint8_t>((b0 * a + radar::kBgB * (255 - a)) / 255);
+    pal[i] = panelColor565(r, g, b);
   }
-  s_icon_palette[0] = panelColor565(radar::kBgR, radar::kBgG, radar::kBgB);
+  pal[0] = panelColor565(radar::kBgR, radar::kBgG, radar::kBgB);
+}
+
+void initAircraftIconPalette() {
+  fillIconPalette(s_icon_palette, radar::kAircraftR, radar::kAircraftG,
+                  radar::kAircraftB);
+  fillIconPalette(s_icon_palette_private, radar::kPrivateAircraftR,
+                  radar::kPrivateAircraftG, radar::kPrivateAircraftB);
 }
 
 void initPalette() {
@@ -255,6 +262,10 @@ void initPalette() {
   // Magenta is R==B, so the swap is a no-op here.
   radar::kColorTrackVector =
       tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
+  radar::kColorAircraftPrivate = panelColor565(
+      radar::kPrivateAircraftR, radar::kPrivateAircraftG, radar::kPrivateAircraftB);
+  radar::kColorTrackVectorPrivate = panelColor565(
+      radar::kPrivateTrackR, radar::kPrivateTrackG, radar::kPrivateTrackB);
   radar::kColorFetchDot = panelColor565(radar::kFetchDotR, radar::kFetchDotG,
                                         radar::kFetchDotB);
   radar::kColorTagType =
@@ -363,9 +374,8 @@ bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
   return true;
 }
 
-void drawBeyondRingDot(int x, int y) {
-  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx,
-                           radar::kColorAircraft);
+void drawBeyondRingDot(int x, int y, uint16_t color) {
+  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx, color);
 }
 
 void clipPointToOuterRing(int x0, int y0, int* x1, int* y1) {
@@ -433,7 +443,8 @@ int aircraftIconIndex(float heading_deg) {
   return idx < 0 ? idx + data::aircraft_icon::kRotations : idx;
 }
 
-void drawAircraftIcon(int cx, int cy, float heading_deg) {
+void drawAircraftIcon(int cx, int cy, float heading_deg,
+                      const lgfx::rgb565_t* palette = s_icon_palette) {
   const int idx = aircraftIconIndex(heading_deg);
   const uint8_t* rot = data::aircraft_icon::kIcon +
                        static_cast<size_t>(idx) *
@@ -442,7 +453,7 @@ void drawAircraftIcon(int cx, int cy, float heading_deg) {
   s_draw->pushImage(cx + off, cy + off, data::aircraft_icon::kSize,
                     data::aircraft_icon::kSize, rot,
                     data::aircraft_icon::kTransparentIndex,
-                    lgfx::color_depth_t::palette_4bit, s_icon_palette);
+                    lgfx::color_depth_t::palette_4bit, palette);
 }
 
 void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
@@ -568,6 +579,7 @@ struct BeyondDotDrawItem {
   int x = 0;
   int y = 0;
   int dist_sq = 0;
+  uint16_t color = 0;
 };
 
 /**
@@ -666,12 +678,14 @@ void drawAircraft() {
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
     dots[dot_count].dist_sq = distSqFromCenter(dot_x, dot_y);
+    dots[dot_count].color = planes[i].is_private ? radar::kColorAircraftPrivate
+                                                 : radar::kColorAircraft;
     ++dot_count;
   }
 
   sortBeyondDotsFarFirst(dots, dot_count);
   for (size_t d = 0; d < dot_count; ++d) {
-    drawBeyondRingDot(dots[d].x, dots[d].y);
+    drawBeyondRingDot(dots[d].x, dots[d].y, dots[d].color);
   }
 
   sortDrawItemsFarFirst(items, draw_count);
@@ -679,9 +693,12 @@ void drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
+    const bool priv = planes[i].is_private;
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
-                    planes[i].gs_knots, radar::kColorTrackVector);
-    drawAircraftIcon(x, y, planes[i].nose_deg);
+                    planes[i].gs_knots,
+                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
+    drawAircraftIcon(x, y, planes[i].nose_deg,
+                     priv ? s_icon_palette_private : s_icon_palette);
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
@@ -1048,7 +1065,7 @@ void layoutFollowPanel() {
 }
 
 /** Draws what layoutFollowPanel() measured, laying it out on demand if nobody did it first. */
-void drawFollowPanel() {
+void drawFollowPanel(bool priv) {
   if (!s_follow_panel_laid_out) {
     layoutFollowPanel();
   }
@@ -1067,7 +1084,9 @@ void drawFollowPanel() {
 
   int y = s_follow_panel_top + radar::kFollowPanelPadYPx;
   for (int i = 0; i < s_follow_panel_line_count; ++i) {
-    s_draw->setTextColor(i == 0 ? radar::kColorAircraft : radar::kColorLabel,
+    s_draw->setTextColor(i == 0 ? (priv ? radar::kColorAircraftPrivate
+                                        : radar::kColorAircraft)
+                                : radar::kColorLabel,
                          radar::kColorBackground);
     s_draw->drawString(s_follow_panel_lines[i], radar::kCenterX, y);
     y += line_h + gap;
@@ -1085,6 +1104,7 @@ void drawFollowOverlay() {
   }
   services::adsb::Aircraft target{};
   const unsigned long base_ms = services::adsb::targetUpdateMs();
+  bool priv = false;
   if (base_ms != 0 && services::adsb::targetSnapshot(&target)) {
     drawFollowTrail();
     float lat = 0.0f;
@@ -1093,13 +1113,16 @@ void drawFollowOverlay() {
     int x = 0;
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
+    priv = target.is_private;
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
-                    radar::kColorTrackVector);
-    drawAircraftIcon(x, y, target.nose_deg);
-    s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx, radar::kColorAircraft);
+                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
+    drawAircraftIcon(x, y, target.nose_deg,
+                     priv ? s_icon_palette_private : s_icon_palette);
+    s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx,
+                       priv ? radar::kColorAircraftPrivate : radar::kColorAircraft);
     drawAircraftTag(x, y, target);
   }
-  drawFollowPanel();
+  drawFollowPanel(priv);
 }
 
 template <typename Gfx>

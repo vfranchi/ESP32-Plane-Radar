@@ -30,6 +30,12 @@ struct Aircraft {
   char callsign[9];
   char type[5];
   char alt[12];
+  /**
+   * Light/small aircraft: ADS-B emitter category A1/A2, or an N-number callsign
+   * when the transponder reports no category. Set at parse time, so no extra
+   * request is needed to tell a Cessna from a 737.
+   */
+  bool is_private;
 };
 
 constexpr size_t kMaxAircraft = 64;

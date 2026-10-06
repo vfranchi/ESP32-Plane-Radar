@@ -106,6 +106,13 @@ constexpr uint8_t kAircraftB = 60;
 constexpr uint8_t kTrackR = 255;
 constexpr uint8_t kTrackG = 0;
 constexpr uint8_t kTrackB = 255;
+/** Private / general aviation: green plane, orange track vector. */
+constexpr uint8_t kPrivateAircraftR = 0;
+constexpr uint8_t kPrivateAircraftG = 255;
+constexpr uint8_t kPrivateAircraftB = 80;
+constexpr uint8_t kPrivateTrackR = 255;
+constexpr uint8_t kPrivateTrackG = 140;
+constexpr uint8_t kPrivateTrackB = 0;
 /** Light cyan; a yellow type tag would vanish against the yellow icon. */
 constexpr uint8_t kTagTypeR = 170;
 constexpr uint8_t kTagTypeG = 240;
@@ -131,6 +138,8 @@ extern uint16_t kColorCenter;
 extern uint16_t kColorFetchDot;
 extern uint16_t kColorAircraft;
 extern uint16_t kColorTrackVector;
+extern uint16_t kColorAircraftPrivate;
+extern uint16_t kColorTrackVectorPrivate;
 extern uint16_t kColorTagType;
 extern uint16_t kColorTagAltitude;
 extern uint16_t kColorRunway;

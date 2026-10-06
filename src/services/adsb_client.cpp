@@ -12,6 +12,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <cctype>
 #include <cstring>
 
 #include "config.h"
@@ -319,6 +320,20 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len,
   }
 }
 
+/**
+ * Private / general aviation: emitter category A1 (light) or A2 (small). Many
+ * transponders report no category at all, so fall back to the callsign -- an
+ * N-number (N + digit) is a US registration, which a light airframe broadcasts
+ * as its callsign.
+ */
+bool isPrivateAircraft(const JsonObject& plane, const char* callsign) {
+  if (plane["category"].is<const char*>()) {
+    const char* c = plane["category"].as<const char*>();
+    return strcmp(c, "A1") == 0 || strcmp(c, "A2") == 0;
+  }
+  return callsign[0] == 'N' && isdigit(static_cast<unsigned char>(callsign[1]));
+}
+
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
@@ -327,6 +342,7 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
   formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground);
+  ac->is_private = isPrivateAircraft(plane, ac->callsign);
 }
 
 /**

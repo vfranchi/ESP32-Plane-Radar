@@ -43,6 +43,9 @@ char s_base[kBaseTopicLen] = {};
 char s_client_id[kClientIdLen] = {};
 char s_topic[128] = {};
 Ctx s_ctx{};
+// Last follow value HA was told. The target also changes with no command at all
+// (BOOT double tap, 3 s hold, serial), and such a change has to be pushed now.
+char s_last_follow[services::follow::kIdLen] = {};
 size_t s_discovery_index = 0;
 unsigned long s_last_discovery_ms = 0;
 unsigned long s_last_state_ms = 0;
@@ -127,7 +130,11 @@ void publishLocationState() {
  *  upper-case) and rejects nonsense, so this is what it actually follows: a
  *  double tap clears the target and HA must not keep showing the old callsign. */
 void publishFollowState() {
-  publishStateTopic("follow", services::follow::target().id, false);
+  const char* id = services::follow::target().id;
+  publishStateTopic("follow", id, false);
+  // Recorded even if the publish failed: the telemetry tick republishes it.
+  std::strncpy(s_last_follow, id, sizeof(s_last_follow) - 1);
+  s_last_follow[sizeof(s_last_follow) - 1] = '\0';
 }
 
 /** Every controllable/reported value once, so HA holds real states instead of
@@ -138,6 +145,18 @@ void publishAllStates() {
   publishSwitchState("runways", ui::radar::showRunways());
   publishSwitchState("debug", ui::radar::debugOverlay());
   publishLocationState();
+  publishFollowState();
+}
+
+/** Push an out-of-band target change the moment it happens. Waiting for the
+ *  telemetry tick leaves HA showing the cleared callsign for up to
+ *  kMqttStateIntervalMs, and a stale id in the entity is what re-sets the follow. */
+void publishFollowIfChanged() {
+  const char* id = services::follow::target().id;
+  if (std::strcmp(id, s_last_follow) == 0) {
+    return;
+  }
+  Serial.printf("MQTT: follow changed to '%s'\n", id[0] != '\0' ? id : "(none)");
   publishFollowState();
 }
 
@@ -422,6 +441,9 @@ void loop() {
     Serial.println("MQTT: discovery complete");
     return;
   }
+
+  // Out-of-band target changes reach HA now; the tick below is the safety net.
+  publishFollowIfChanged();
 
   if (millis() - s_last_state_ms >= config::kMqttStateIntervalMs) {
     if (ESP.getFreeHeap() < config::kMqttMinFreeHeap) {

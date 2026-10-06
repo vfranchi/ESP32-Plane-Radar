@@ -248,6 +248,29 @@ void initAircraftIconPalette() {
                   radar::kPrivateAircraftG, radar::kPrivateAircraftB);
 }
 
+/**
+ * One pre-rendered icon set: the bitmap, the palette it blits with, and the
+ * geometry that follows from its size. The two sets differ only in scale --
+ * the silhouette, the 72 rotations and the transparent key are shared.
+ */
+struct AircraftIconSet {
+  const uint8_t* blob;
+  const lgfx::rgb565_t* palette;
+  int size;
+  int bytes_per_rotation;
+  /** Blit offset from the aircraft position, and where its speed vector starts. */
+  int half;
+};
+
+const AircraftIconSet s_icon_airliner = {
+    data::aircraft_icon::kIcon, s_icon_palette, data::aircraft_icon::kSize,
+    data::aircraft_icon::kBytesPerRotation, radar::kAircraftIconHalfPx};
+
+const AircraftIconSet s_icon_private = {
+    data::aircraft_icon_small::kIcon, s_icon_palette_private,
+    data::aircraft_icon_small::kSize, data::aircraft_icon_small::kBytesPerRotation,
+    radar::kPrivateAircraftIconHalfPx};
+
 void initPalette() {
   radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
@@ -424,15 +447,18 @@ int speedLineLengthPx(float gs_knots) {
   return len;
 }
 
-void noseTip(int cx, int cy, float heading_deg, int* tip_x, int* tip_y) {
+void noseTip(int cx, int cy, float heading_deg, int nose_len_px, int* tip_x,
+             int* tip_y) {
   constexpr float kDegToRad = 0.01745329252f;
   const float rad = heading_deg * kDegToRad;
-  *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * radar::kAircraftNoseLenPx));
-  *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * radar::kAircraftNoseLenPx));
+  *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * nose_len_px));
+  *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * nose_len_px));
 }
 
 static_assert(data::aircraft_icon::kSize == radar::kAircraftIconSizePx,
               "icon data and theme size disagree");
+static_assert(data::aircraft_icon_small::kSize == radar::kPrivateAircraftIconSizePx,
+              "private icon data and theme size disagree");
 
 /** Nearest pre-rendered rotation for a heading in degrees. */
 int aircraftIconIndex(float heading_deg) {
@@ -444,20 +470,18 @@ int aircraftIconIndex(float heading_deg) {
 }
 
 void drawAircraftIcon(int cx, int cy, float heading_deg,
-                      const lgfx::rgb565_t* palette = s_icon_palette) {
+                      const AircraftIconSet& set) {
   const int idx = aircraftIconIndex(heading_deg);
-  const uint8_t* rot = data::aircraft_icon::kIcon +
-                       static_cast<size_t>(idx) *
-                           data::aircraft_icon::kBytesPerRotation;
-  const int off = -radar::kAircraftIconHalfPx;
-  s_draw->pushImage(cx + off, cy + off, data::aircraft_icon::kSize,
-                    data::aircraft_icon::kSize, rot,
+  const uint8_t* rot = set.blob +
+                       static_cast<size_t>(idx) * set.bytes_per_rotation;
+  const int off = -set.half;
+  s_draw->pushImage(cx + off, cy + off, set.size, set.size, rot,
                     data::aircraft_icon::kTransparentIndex,
-                    lgfx::color_depth_t::palette_4bit, palette);
+                    lgfx::color_depth_t::palette_4bit, set.palette);
 }
 
 void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
-                     float gs_knots, uint16_t color) {
+                     float gs_knots, uint16_t color, int nose_len_px) {
   const int len = speedLineLengthPx(gs_knots);
   if (len <= 0) {
     return;
@@ -465,7 +489,7 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
 
   int tip_x = 0;
   int tip_y = 0;
-  noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
+  noseTip(cx, cy, heading_deg, nose_len_px, &tip_x, &tip_y);
 
   constexpr float kDegToRad = 0.01745329252f;
   const float rad = track_deg * kDegToRad;
@@ -694,11 +718,12 @@ void drawAircraft() {
     const int x = items[d].x;
     const int y = items[d].y;
     const bool priv = planes[i].is_private;
+    const AircraftIconSet& icon = priv ? s_icon_private : s_icon_airliner;
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
-    drawAircraftIcon(x, y, planes[i].nose_deg,
-                     priv ? s_icon_palette_private : s_icon_palette);
+                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
+                    icon.half);
+    drawAircraftIcon(x, y, planes[i].nose_deg, icon);
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
@@ -1114,10 +1139,11 @@ void drawFollowOverlay() {
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
     priv = target.is_private;
+    const AircraftIconSet& icon = priv ? s_icon_private : s_icon_airliner;
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
-    drawAircraftIcon(x, y, target.nose_deg,
-                     priv ? s_icon_palette_private : s_icon_palette);
+                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
+                    icon.half);
+    drawAircraftIcon(x, y, target.nose_deg, icon);
     s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx,
                        priv ? radar::kColorAircraftPrivate : radar::kColorAircraft);
     drawAircraftTag(x, y, target);

@@ -37,6 +37,14 @@ constexpr int kAircraftIconSizePx = 19;
 constexpr int kAircraftIconHalfPx = kAircraftIconSizePx / 2;
 /** Distance from the aircraft position to its nose tip = vector origin (px). */
 constexpr int kAircraftNoseLenPx = kAircraftIconHalfPx;
+/** Private/light aircraft draw the same silhouette at this fraction of the size,
+ *  so a Cessna and a 737 differ by shape as well as by colour. */
+constexpr float kPrivateAircraftScale = 0.6f;
+/** Private icon box, px. Must match data::aircraft_icon_small::kSize. */
+constexpr int kPrivateAircraftIconSizePx =
+    static_cast<int>(kAircraftIconSizePx * kPrivateAircraftScale + 0.5f);
+/** Half the private icon box: blit offset and speed-vector origin. */
+constexpr int kPrivateAircraftIconHalfPx = kPrivateAircraftIconSizePx / 2;
 /** Tag clearance from the symbol centre; clears the icon at any rotation (px). */
 constexpr int kAircraftSymbolHalfPx = 14;
 

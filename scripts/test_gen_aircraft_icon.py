@@ -58,3 +58,25 @@ def test_packing_is_high_nibble_first():
 
 def test_output_is_deterministic():
     assert gen.build() == gen.build()
+
+
+def test_small_set_is_sized_and_packed():
+    assert gen.bytes_per_row(gen.ICON_PX_SMALL) == 6   # 11 px, 4bpp, 2 px/byte
+    assert gen.bytes_per_rot(gen.ICON_PX_SMALL) == 66
+    blob = gen.build(gen.ICON_PX_SMALL)
+    assert len(blob) == gen.ROTATIONS * gen.bytes_per_rot(gen.ICON_PX_SMALL)
+
+
+def test_small_set_has_ink_in_every_rotation():
+    base = gen.render_base(gen.ICON_PX_SMALL)
+    for i in range(gen.ROTATIONS):
+        alpha = gen.rotation_alpha(base, i * 360.0 / gen.ROTATIONS, gen.ICON_PX_SMALL)
+        assert max(alpha) > 0, f"small rotation {i} is blank"
+        assert len(alpha) == gen.ICON_PX_SMALL * gen.ICON_PX_SMALL
+
+
+def test_both_sets_reach_the_header():
+    header = gen.render_header(gen.SETS)
+    assert "namespace data::aircraft_icon {" in header
+    assert "namespace data::aircraft_icon_small {" in header
+    assert f"constexpr int kSize = {gen.ICON_PX_SMALL};" in header

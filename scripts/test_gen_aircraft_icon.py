@@ -86,17 +86,19 @@ def test_all_sets_reach_the_header():
     assert f"constexpr int kSize = {gen.ICON_PX_SMALL};" in header
 
 
-def test_helicopter_set_is_sized_like_the_small_aircraft():
-    """Rotorcraft ride at the private/light box size, not the airliner one."""
-    size = gen.ICON_PX_SMALL
+def test_helicopter_set_has_its_own_box():
+    """Rotorcraft have their own size: bigger than the private icon so the rotor
+    can separate from the body, smaller than the airliner so it does not crowd."""
+    size = gen.ICON_PX_HELI
     blob = gen.build(size, gen.HELICOPTER_SHAPE)
     assert len(blob) == gen.ROTATIONS * gen.bytes_per_rot(size)
+    assert gen.ICON_PX_SMALL < size < gen.ICON_PX
     # The firmware static_asserts this against radar::kHelicopterIconSizePx.
-    assert gen.ICON_PX_SMALL == 13
+    assert size == 15
 
 
 def test_helicopter_has_ink_in_every_rotation():
-    size = gen.ICON_PX_SMALL
+    size = gen.ICON_PX_HELI
     base = gen.render_base(size, gen.HELICOPTER_SHAPE)
     for i in range(gen.ROTATIONS):
         alpha = gen.rotation_alpha(base, i * 360.0 / gen.ROTATIONS, size)
@@ -108,7 +110,7 @@ def test_helicopter_has_ink_in_every_rotation():
 def test_helicopter_nose_points_up_at_rotation_zero():
     """Checked on the centre column, not the top row: the rotor blades reach
     higher than the nose, so the topmost ink of the icon is not the nose."""
-    size = gen.ICON_PX_SMALL
+    size = gen.ICON_PX_HELI
     alpha = gen.rotation_alpha(gen.render_base(size, gen.HELICOPTER_SHAPE), 0.0, size)
     centre = size // 2
     col = [r for r in range(size) if alpha[r * size + centre] > 0]
@@ -116,24 +118,25 @@ def test_helicopter_nose_points_up_at_rotation_zero():
     assert min(col) <= 3, f"nose is not near the top (first ink at row {min(col)})"
 
 
-def test_helicopter_rotor_is_full_opacity():
-    """The rotor is drawn as solid as the body (HELICOPTER_BLADE_WEIGHT = 1.0).
+def test_helicopter_rotor_is_faded_but_present():
+    """The rotor is dimmer than the body; a solid rotor merges into it.
 
-    Checked on the count of fully covered pixels, not on the presence of faded
-    ones: anti-aliased edges always leave mid values, but a faded rotor would
-    drop the full-coverage count to the body alone (11 px at weight 0.60 versus
-    28 px at full opacity, measured).
+    Anchored on the measured numbers at the current size (8 fully covered px for
+    the body spine, 82 mid pixels for the blades), with enough slack that a blade
+    re-tune does not have to rewrite the test.
     """
-    size = gen.ICON_PX_SMALL
+    size = gen.ICON_PX_HELI
     alpha = gen.rotation_alpha(gen.render_base(size, gen.HELICOPTER_SHAPE), 0.0, size)
     assert max(alpha) == 15, "no full-coverage pixels - body missing"
-    assert alpha.count(15) >= 20, (
-        f"rotor is not solid: only {alpha.count(15)} fully covered px")
-    assert gen.HELICOPTER_BLADE_WEIGHT == 1.0
+    assert alpha.count(15) < 20, (
+        f"rotor looks solid, not faded: {alpha.count(15)} fully covered px")
+    faded = [v for v in alpha if 0 < v < 15]
+    assert len(faded) >= 50, f"rotor blades lost in the downscale ({len(faded)} px)"
+    assert gen.HELICOPTER_BLADE_WEIGHT < 1.0
 
 
 def test_helicopter_differs_from_the_plane_blob():
-    size = gen.ICON_PX_SMALL
+    size = gen.ICON_PX_HELI
     plane_blob = gen.build(size, gen.PLANE_SHAPE)
     heli_blob = gen.build(size, gen.HELICOPTER_SHAPE)
     assert plane_blob != heli_blob

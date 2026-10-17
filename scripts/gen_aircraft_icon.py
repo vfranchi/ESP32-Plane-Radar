@@ -30,6 +30,10 @@ ICON_PX = 19          # airliner icon: square bounding box, pixels
 # Private/light icon. Must stay equal to radar::kPrivateAircraftIconSizePx; the
 # firmware static_asserts the two against each other, so a mismatch fails the build.
 ICON_PX_SMALL = 13
+# Rotorcraft box. Must stay equal to radar::kHelicopterIconSizePx: bigger than the
+# private icon so the rotor has room to separate from the body, smaller than the
+# airliner so it does not crowd its neighbours.
+ICON_PX_HELI = 15
 ROTATIONS = 72        # one every 5 degrees
 SUPERSAMPLE = 8       # rasterise at ICON_PX * SUPERSAMPLE, then downscale
 
@@ -70,19 +74,19 @@ def rotor(angles, root: float, tip: float, w_root: float, w_tip: float,
             for a in angles]
 
 
-# Geometry is tuned for the SMALL icon size (the rotorcraft shares the private
-# aircraft's box): at 13 px the 19 px outline broke into a spray of single pixels,
-# the tail boom vanished and the blades merged with the body. Chunky features and
-# a wider boom are what survive the downscale, same trade the plane icon makes.
-HELI_FUSELAGE = [(0.00, 0.85), (0.16, 0.55), (0.26, 0.10), (0.18, -0.30),
-                 (0.11, -0.60), (0.10, -0.80), (0.00, -0.88), (-0.10, -0.80),
-                 (-0.11, -0.60), (-0.18, -0.30), (-0.26, 0.10), (-0.16, 0.55)]
+# Geometry is tuned for ICON_PX_HELI. A slim fuselage with a thin boom is what
+# keeps negative space between the body and the blade roots -- a chunkier outline
+# (tried for a 13 px box) clogs into an asterisk at 15 px, and the 19 px numbers
+# collapsed into single pixels at 13. Check the coverage map before re-tuning.
+HELI_FUSELAGE = [(0.00, 0.82), (0.11, 0.52), (0.17, 0.16), (0.13, -0.24),
+                 (0.055, -0.54), (0.030, -0.80), (0.000, -0.92), (-0.030, -0.80),
+                 (-0.055, -0.54), (-0.13, -0.24), (-0.17, 0.16), (-0.11, 0.52)]
 # Tail rotor: a short bar across the end of the boom (angle 0 points at the nose,
 # so the across-the-body pair is 90/270).
-HELI_TAIL_ROTOR = rotor([90, 270], 0.0, 0.22, 0.16, 0.10, dy=-0.78)
-# Main rotor: four fat blades, none of them lying along the fuselage axis, so the
+HELI_TAIL_ROTOR = rotor([90, 270], 0.0, 0.17, 0.09, 0.06, dy=-0.84)
+# Main rotor: four blades, none of them lying along the fuselage axis, so the
 # blades never merge with the body or read as a spike off the nose.
-HELI_MAIN_ROTOR = rotor([42, 132, 222, 312], 0.28, 0.98, 0.40, 0.22, dy=0.12)
+HELI_MAIN_ROTOR = rotor([42, 132, 222, 312], 0.22, 0.92, 0.30, 0.14, dy=0.14)
 
 # Top-down silhouette, nose at +Y. Unit box: 1.0 = half the icon edge.
 # Geometry approved via the preview renders (2026-09-28). No FIN polygon:
@@ -106,10 +110,9 @@ POLYGONS = [FUSELAGE, WING_R, WING_L, TAIL_R, TAIL_L]
 # the firmware. It only changes generated data. Rerun Tasks 2-4 after editing.
 
 PLANE_SHAPE = [(POLYGONS, 1.0)]
-# Full opacity: the owner wants the rotor as solid as the body, and the 13 px
-# geometry (fat blades, chunkier fuselage) is what keeps it from reading as an
-# asterisk. Lower this to fade the rotor without touching any other constant.
-HELICOPTER_BLADE_WEIGHT = 1.0
+# Faded rotor: at full opacity the blades and the body merge into one mass and the
+# icon stops reading as a helicopter. This is the single knob for that trade-off.
+HELICOPTER_BLADE_WEIGHT = 0.8
 HELICOPTER_SHAPE = [([HELI_FUSELAGE] + HELI_TAIL_ROTOR, 1.0),
                     (HELI_MAIN_ROTOR, HELICOPTER_BLADE_WEIGHT)]
 
@@ -118,7 +121,7 @@ HELICOPTER_SHAPE = [([HELI_FUSELAGE] + HELI_TAIL_ROTOR, 1.0),
 # rotor, and one palette serves both sets (see radar_display.cpp).
 SETS = [("aircraft_icon", ICON_PX, (250, 204, 60), PLANE_SHAPE),
         ("aircraft_icon_small", ICON_PX_SMALL, (0, 255, 80), PLANE_SHAPE),
-        ("helicopter_icon", ICON_PX_SMALL, (250, 204, 60), HELICOPTER_SHAPE)]
+        ("helicopter_icon", ICON_PX_HELI, (250, 204, 60), HELICOPTER_SHAPE)]
 BG_RGB = (4, 10, 28)
 
 NAMESPACE_TMPL = """\

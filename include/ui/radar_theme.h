@@ -43,10 +43,10 @@ constexpr int kAircraftNoseLenPx = kAircraftIconHalfPx;
 constexpr int kPrivateAircraftIconSizePx = 13;
 /** Half the private icon box: blit offset and speed-vector origin. */
 constexpr int kPrivateAircraftIconHalfPx = kPrivateAircraftIconSizePx / 2;
-/** Rotorcraft draw at the small-aircraft size on purpose: the rotor disc is what
- *  tells them apart, and at the 19 px budget the blades fuse into the body into an
- *  asterisk. Must match data::helicopter_icon::kSize (static_asserted). */
-constexpr int kHelicopterIconSizePx = kPrivateAircraftIconSizePx;
+/** Rotorcraft box, between the private (13) and airliner (19) sizes: big enough
+ *  for the rotor to separate from the body, small enough not to crowd a
+ *  neighbour. Must match data::helicopter_icon::kSize (static_asserted). */
+constexpr int kHelicopterIconSizePx = 15;
 /** Half the helicopter icon box: blit offset and speed-vector origin. */
 constexpr int kHelicopterIconHalfPx = kHelicopterIconSizePx / 2;
 /** Tag clearance from the symbol centre; clears the icon at any rotation (px). */

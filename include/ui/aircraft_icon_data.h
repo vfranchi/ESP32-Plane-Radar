@@ -38,11 +38,11 @@ extern const uint8_t kIcon[];
 namespace data::helicopter_icon {
 
 /** Square icon bounding box, pixels. */
-constexpr int kSize = 13;
+constexpr int kSize = 15;
 /** Pre-rendered rotations; index i is i * (360 / kRotations) degrees. */
 constexpr int kRotations = 72;
-/** Bytes per rotation: 4bpp, 7 bytes per 13px row, high nibble first. */
-constexpr int kBytesPerRotation = 91;
+/** Bytes per rotation: 4bpp, 8 bytes per 15px row, high nibble first. */
+constexpr int kBytesPerRotation = 120;
 /** Palette index treated as transparent by pushImage. */
 constexpr int kTransparentIndex = 0;
 

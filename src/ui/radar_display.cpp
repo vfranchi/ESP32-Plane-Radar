@@ -271,6 +271,21 @@ const AircraftIconSet s_icon_private = {
     data::aircraft_icon_small::kSize, data::aircraft_icon_small::kBytesPerRotation,
     radar::kPrivateAircraftIconHalfPx};
 
+// Small size and the airliner palette: the rotorcraft is told apart by its rotor,
+// not by a third colour competing with the tags and the track vector, and the
+// smaller box keeps its disc from crowding the aircraft next to it.
+const AircraftIconSet s_icon_helicopter = {
+    data::helicopter_icon::kIcon, s_icon_palette, data::helicopter_icon::kSize,
+    data::helicopter_icon::kBytesPerRotation, radar::kHelicopterIconHalfPx};
+
+/** The icon a given aircraft is drawn with. */
+const AircraftIconSet& iconFor(const services::adsb::Aircraft& plane) {
+  if (plane.is_helicopter) {
+    return s_icon_helicopter;
+  }
+  return plane.is_private ? s_icon_private : s_icon_airliner;
+}
+
 void initPalette() {
   radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
@@ -459,6 +474,8 @@ static_assert(data::aircraft_icon::kSize == radar::kAircraftIconSizePx,
               "icon data and theme size disagree");
 static_assert(data::aircraft_icon_small::kSize == radar::kPrivateAircraftIconSizePx,
               "private icon data and theme size disagree");
+static_assert(data::helicopter_icon::kSize == radar::kHelicopterIconSizePx,
+              "helicopter icon data and theme size disagree");
 
 /** Nearest pre-rendered rotation for a heading in degrees. */
 int aircraftIconIndex(float heading_deg) {
@@ -718,7 +735,7 @@ void drawAircraft() {
     const int x = items[d].x;
     const int y = items[d].y;
     const bool priv = planes[i].is_private;
-    const AircraftIconSet& icon = priv ? s_icon_private : s_icon_airliner;
+    const AircraftIconSet& icon = iconFor(planes[i]);
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots,
                     priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
@@ -1139,7 +1156,7 @@ void drawFollowOverlay() {
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
     priv = target.is_private;
-    const AircraftIconSet& icon = priv ? s_icon_private : s_icon_airliner;
+    const AircraftIconSet& icon = iconFor(target);
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
                     priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
                     icon.half);

@@ -34,3 +34,19 @@ constexpr int kTransparentIndex = 0;
 extern const uint8_t kIcon[];
 
 }  // namespace data::aircraft_icon_small
+
+namespace data::helicopter_icon {
+
+/** Square icon bounding box, pixels. */
+constexpr int kSize = 13;
+/** Pre-rendered rotations; index i is i * (360 / kRotations) degrees. */
+constexpr int kRotations = 72;
+/** Bytes per rotation: 4bpp, 7 bytes per 13px row, high nibble first. */
+constexpr int kBytesPerRotation = 91;
+/** Palette index treated as transparent by pushImage. */
+constexpr int kTransparentIndex = 0;
+
+/** kRotations * kBytesPerRotation bytes, rotation-major. */
+extern const uint8_t kIcon[];
+
+}  // namespace data::helicopter_icon

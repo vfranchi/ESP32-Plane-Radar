@@ -3,19 +3,25 @@
 
 Run: /opt/hermes/.venv/bin/python3 scripts/gen_aircraft_icon.py
 
-Emits the same silhouette twice at different sizes: `aircraft_icon` for airliners
-and `aircraft_icon_small` for private/light traffic, so a light airframe is
-separable by size as well as by colour.
+Emits the fixed-wing silhouette twice at different sizes -- `aircraft_icon` for
+airliners and `aircraft_icon_small` for private/light traffic, so a light airframe
+is separable by size as well as by colour -- plus `helicopter_icon`, the rotorcraft
+shape (emitter category A7), at the airliner size.
+
+A shape is a list of (polygons, weight) layers. A weight below 1 rasterises the
+layer onto a lower coverage nibble, which the firmware's pre-blended palette draws
+as a faded component -- that is how the helicopter's rotor blades read as spinning
+without any runtime alpha work.
 
 Writes:
   include/ui/aircraft_icon_data.h            generated, committed
   src/ui/aircraft_icon_data.cpp              generated, committed
-  .artifacts/aircraft_icon_preview.png       visual check only, gitignored
-  .artifacts/aircraft_icon_preview_small.png
+  .artifacts/<namespace>_preview.png         visual check only, gitignored
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -36,10 +42,47 @@ OUT_H = ROOT / "include" / "ui" / "aircraft_icon_data.h"
 OUT_CPP = ROOT / "src" / "ui" / "aircraft_icon_data.cpp"
 ARTIFACTS = ROOT / ".artifacts"
 
-# (namespace, size, preview colour) -- the colours mirror the firmware theme.
-SETS = [("aircraft_icon", ICON_PX, (250, 204, 60)),
-        ("aircraft_icon_small", ICON_PX_SMALL, (0, 255, 80))]
-BG_RGB = (4, 10, 28)
+# --- rotorcraft (emitter category A7) -------------------------------------------
+# Top-down helicopter, nose at +Y, same unit box as the plane. The rotor is drawn
+# as its own layer at a lower weight: at 19 px a full-opacity four-blade cross
+# collapses into an asterisk and stops reading as an aircraft, while faded blades
+# keep the disc legible and still say "rotor" instead of "swept wing".
+
+
+def blade(angle_deg: float, root: float, tip: float,
+          w_root: float, w_tip: float) -> list[tuple[float, float]]:
+    """One rotor blade along `angle_deg` (degrees, 0 = nose/up) as a quadrilateral."""
+    a = math.radians(angle_deg)
+    ax, ay = math.sin(a), math.cos(a)      # along the blade
+    px, py = math.cos(a), -math.sin(a)     # across it
+
+    def pt(along: float, off: float) -> tuple[float, float]:
+        return (ax * along + px * off, ay * along + py * off)
+
+    return [pt(root, -w_root / 2), pt(tip, -w_tip / 2),
+            pt(tip, w_tip / 2), pt(root, w_root / 2)]
+
+
+def rotor(angles, root: float, tip: float, w_root: float, w_tip: float,
+          dy: float = 0.0) -> list[list[tuple[float, float]]]:
+    """A rotor: one blade per angle, shifted by `dy` along the fuselage axis."""
+    return [[(x, y + dy) for x, y in blade(a, root, tip, w_root, w_tip)]
+            for a in angles]
+
+
+# Geometry is tuned for the SMALL icon size (the rotorcraft shares the private
+# aircraft's box): at 13 px the 19 px outline broke into a spray of single pixels,
+# the tail boom vanished and the blades merged with the body. Chunky features and
+# a wider boom are what survive the downscale, same trade the plane icon makes.
+HELI_FUSELAGE = [(0.00, 0.85), (0.16, 0.55), (0.26, 0.10), (0.18, -0.30),
+                 (0.11, -0.60), (0.10, -0.80), (0.00, -0.88), (-0.10, -0.80),
+                 (-0.11, -0.60), (-0.18, -0.30), (-0.26, 0.10), (-0.16, 0.55)]
+# Tail rotor: a short bar across the end of the boom (angle 0 points at the nose,
+# so the across-the-body pair is 90/270).
+HELI_TAIL_ROTOR = rotor([90, 270], 0.0, 0.22, 0.16, 0.10, dy=-0.78)
+# Main rotor: four fat blades, none of them lying along the fuselage axis, so the
+# blades never merge with the body or read as a spike off the nose.
+HELI_MAIN_ROTOR = rotor([42, 132, 222, 312], 0.28, 0.98, 0.40, 0.22, dy=0.12)
 
 # Top-down silhouette, nose at +Y. Unit box: 1.0 = half the icon edge.
 # Geometry approved via the preview renders (2026-09-28). No FIN polygon:
@@ -61,6 +104,21 @@ POLYGONS = [FUSELAGE, WING_R, WING_L, TAIL_R, TAIL_L]
 #   forte (strong)  [(0.10, 0.36), (0.55, -0.04), (1.00, -0.42), (0.98, -0.54), (0.10, -0.12)]
 # Changing the wing changes NO constant -- no ICON_PX, no byte counts, nothing in
 # the firmware. It only changes generated data. Rerun Tasks 2-4 after editing.
+
+PLANE_SHAPE = [(POLYGONS, 1.0)]
+# 0.60, not 0.80: at 13 px a 0.80 blade competes with the body and the icon reads
+# as a starburst, while 0.60 leaves a solid fuselage with a soft rotor around it.
+HELICOPTER_BLADE_WEIGHT = 0.60
+HELICOPTER_SHAPE = [([HELI_FUSELAGE] + HELI_TAIL_ROTOR, 1.0),
+                    (HELI_MAIN_ROTOR, HELICOPTER_BLADE_WEIGHT)]
+
+# (namespace, size, preview colour, shape) -- the colours mirror the firmware theme.
+# The helicopter shares the airliner colour on purpose: it is told apart by its
+# rotor, and one palette serves both sets (see radar_display.cpp).
+SETS = [("aircraft_icon", ICON_PX, (250, 204, 60), PLANE_SHAPE),
+        ("aircraft_icon_small", ICON_PX_SMALL, (0, 255, 80), PLANE_SHAPE),
+        ("helicopter_icon", ICON_PX_SMALL, (250, 204, 60), HELICOPTER_SHAPE)]
+BG_RGB = (4, 10, 28)
 
 NAMESPACE_TMPL = """\
 namespace data::{ns} {{
@@ -97,15 +155,26 @@ def bytes_per_rot(size_px: int = ICON_PX) -> int:
     return bytes_per_row(size_px) * size_px
 
 
-def render_base(size_px: int = ICON_PX) -> Image.Image:
-    """Rasterise the silhouette once, nose up, at SUPERSAMPLE resolution."""
+def render_base(size_px: int = ICON_PX, shape=None) -> Image.Image:
+    """Rasterise one icon shape once, nose up, at SUPERSAMPLE resolution.
+
+    `shape` is a list of (polygons, weight) layers; the default is the fixed-wing
+    silhouette. A weight below 1 scales that layer's coverage, which survives the
+    downscale as a lower nibble and renders as a faded part of the icon.
+    """
+    shape = PLANE_SHAPE if shape is None else shape
     size = size_px * SUPERSAMPLE
     img = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(img)
-    for poly in POLYGONS:
-        pts = [((x + 1.0) * 0.5 * (size - 1),
-                (1.0 - y) * 0.5 * (size - 1)) for x, y in poly]
-        draw.polygon(pts, fill=255)
+    for polys, weight in shape:
+        layer = Image.new("L", (size, size), 0)
+        draw = ImageDraw.Draw(layer)
+        for poly in polys:
+            pts = [((x + 1.0) * 0.5 * (size - 1),
+                    (1.0 - y) * 0.5 * (size - 1)) for x, y in poly]
+            draw.polygon(pts, fill=255)
+        if weight < 1.0:
+            layer = layer.point(lambda v: int(v * weight))
+        img = Image.composite(layer, img, layer)
     return img
 
 
@@ -133,8 +202,8 @@ def pack4bpp(alpha: list[int], size_px: int = ICON_PX) -> bytes:
     return bytes(out)
 
 
-def build(size_px: int = ICON_PX) -> bytes:
-    base = render_base(size_px)
+def build(size_px: int = ICON_PX, shape=None) -> bytes:
+    base = render_base(size_px, shape)
     blob = bytearray()
     for i in range(ROTATIONS):
         blob += pack4bpp(
@@ -147,7 +216,7 @@ def render_header(sets) -> str:
         NAMESPACE_TMPL.format(ns=ns, size=size, rotations=ROTATIONS,
                               bytes_per_row=bytes_per_row(size),
                               bytes_per_rot=bytes_per_rot(size))
-        for ns, size, _ in sets)
+        for ns, size, _, _ in sets)
     return HEADER_TMPL.format(sections=sections)
 
 
@@ -157,8 +226,8 @@ def render_cpp(sets) -> str:
         '#include "ui/aircraft_icon_data.h"',
         "",
     ]
-    for ns, size, _ in sets:
-        blob = build(size)
+    for ns, size, _, shape in sets:
+        blob = build(size, shape)
         lines += [
             f"namespace data::{ns} {{",
             "",
@@ -210,17 +279,16 @@ def main() -> int:
     OUT_CPP.write_text(render_cpp(SETS), encoding="utf-8")
 
     total = 0
-    for ns, size, colour in SETS:
+    for ns, size, colour, shape in SETS:
         blob_len = ROTATIONS * bytes_per_rot(size)
         total += blob_len
-        suffix = "" if size == ICON_PX else "_small"
-        preview = ARTIFACTS / f"aircraft_icon_preview{suffix}.png"
-        write_preview(render_base(size), preview, size, colour)
+        preview = ARTIFACTS / f"{ns}_preview.png"
+        write_preview(render_base(size, shape), preview, size, colour)
         print(f"  data::{ns}: {size}x{size} px, {blob_len} bytes "
               f"({ROTATIONS} rotations)")
     print(f"wrote {OUT_H.relative_to(ROOT)} + {OUT_CPP.relative_to(ROOT)} "
           f"({total} bytes total)")
-    print(f"previews: {ARTIFACTS.relative_to(ROOT)}/aircraft_icon_preview*.png")
+    print(f"previews: {ARTIFACTS.relative_to(ROOT)}/<namespace>_preview.png")
     return 0
 
 

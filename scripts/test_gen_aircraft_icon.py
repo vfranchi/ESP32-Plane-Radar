@@ -116,20 +116,20 @@ def test_helicopter_nose_points_up_at_rotation_zero():
     assert min(col) <= 3, f"nose is not near the top (first ink at row {min(col)})"
 
 
-def test_helicopter_blades_are_faded_but_present():
-    """Full-opacity blades make the icon an asterisk, invisible ones a bare fuselage.
+def test_helicopter_rotor_is_full_opacity():
+    """The rotor is drawn as solid as the body (HELICOPTER_BLADE_WEIGHT = 1.0).
 
-    The rotor must therefore land strictly between the two: some full-coverage
-    pixels (the body and the tail rotor) and a solid patch of faded ones.
+    Checked on the count of fully covered pixels, not on the presence of faded
+    ones: anti-aliased edges always leave mid values, but a faded rotor would
+    drop the full-coverage count to the body alone (11 px at weight 0.60 versus
+    28 px at full opacity, measured).
     """
     size = gen.ICON_PX_SMALL
     alpha = gen.rotation_alpha(gen.render_base(size, gen.HELICOPTER_SHAPE), 0.0, size)
     assert max(alpha) == 15, "no full-coverage pixels - body missing"
-    faded = [v for v in alpha if 0 < v < 15]
-    # 75 of the 169 pixels are blades at weight 0.60; the assert is a floor, not the
-    # measurement, so a re-tune of the blade geometry does not have to match it.
-    assert len(faded) >= 30, f"rotor blades lost in the downscale ({len(faded)} px)"
-    assert 8 <= max(faded) <= 14, f"blade coverage off the fade range: {max(faded)}"
+    assert alpha.count(15) >= 20, (
+        f"rotor is not solid: only {alpha.count(15)} fully covered px")
+    assert gen.HELICOPTER_BLADE_WEIGHT == 1.0
 
 
 def test_helicopter_differs_from_the_plane_blob():

@@ -106,9 +106,10 @@ POLYGONS = [FUSELAGE, WING_R, WING_L, TAIL_R, TAIL_L]
 # the firmware. It only changes generated data. Rerun Tasks 2-4 after editing.
 
 PLANE_SHAPE = [(POLYGONS, 1.0)]
-# 0.60, not 0.80: at 13 px a 0.80 blade competes with the body and the icon reads
-# as a starburst, while 0.60 leaves a solid fuselage with a soft rotor around it.
-HELICOPTER_BLADE_WEIGHT = 0.60
+# Full opacity: the owner wants the rotor as solid as the body, and the 13 px
+# geometry (fat blades, chunkier fuselage) is what keeps it from reading as an
+# asterisk. Lower this to fade the rotor without touching any other constant.
+HELICOPTER_BLADE_WEIGHT = 1.0
 HELICOPTER_SHAPE = [([HELI_FUSELAGE] + HELI_TAIL_ROTOR, 1.0),
                     (HELI_MAIN_ROTOR, HELICOPTER_BLADE_WEIGHT)]
 

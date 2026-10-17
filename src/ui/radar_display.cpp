@@ -271,12 +271,21 @@ const AircraftIconSet s_icon_private = {
     data::aircraft_icon_small::kSize, data::aircraft_icon_small::kBytesPerRotation,
     radar::kPrivateAircraftIconHalfPx};
 
-// Small size and the airliner palette: the rotorcraft is told apart by its rotor,
-// not by a third colour competing with the tags and the track vector, and the
-// smaller box keeps its disc from crowding the aircraft next to it.
+// Small box and the small-aircraft palette: the rotorcrafts wear the same livery
+// as the light aircraft (the rotor is what tells them apart), so one palette
+// serves both and there is no third colour competing with the tags.
 const AircraftIconSet s_icon_helicopter = {
-    data::helicopter_icon::kIcon, s_icon_palette, data::helicopter_icon::kSize,
+    data::helicopter_icon::kIcon, s_icon_palette_private, data::helicopter_icon::kSize,
     data::helicopter_icon::kBytesPerRotation, radar::kHelicopterIconHalfPx};
+
+/**
+ * True for the aircraft wearing the small-aircraft livery: the same icon colour,
+ * rim dot and speed vector as a light aircraft. Rotorcraft share it because they
+ * are drawn at the same size, so a third colour would only add noise.
+ */
+bool usesSmallLivery(const services::adsb::Aircraft& plane) {
+  return plane.is_private || plane.is_helicopter;
+}
 
 /** The icon a given aircraft is drawn with. */
 const AircraftIconSet& iconFor(const services::adsb::Aircraft& plane) {
@@ -719,8 +728,9 @@ void drawAircraft() {
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
     dots[dot_count].dist_sq = distSqFromCenter(dot_x, dot_y);
-    dots[dot_count].color = planes[i].is_private ? radar::kColorAircraftPrivate
-                                                 : radar::kColorAircraft;
+    dots[dot_count].color = usesSmallLivery(planes[i])
+                                ? radar::kColorAircraftPrivate
+                                : radar::kColorAircraft;
     ++dot_count;
   }
 
@@ -734,11 +744,12 @@ void drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
-    const bool priv = planes[i].is_private;
+    const bool small_livery = usesSmallLivery(planes[i]);
     const AircraftIconSet& icon = iconFor(planes[i]);
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
+                    small_livery ? radar::kColorTrackVectorPrivate
+                                 : radar::kColorTrackVector,
                     icon.half);
     drawAircraftIcon(x, y, planes[i].nose_deg, icon);
   }
@@ -1146,7 +1157,7 @@ void drawFollowOverlay() {
   }
   services::adsb::Aircraft target{};
   const unsigned long base_ms = services::adsb::targetUpdateMs();
-  bool priv = false;
+  bool small_livery = false;
   if (base_ms != 0 && services::adsb::targetSnapshot(&target)) {
     drawFollowTrail();
     float lat = 0.0f;
@@ -1155,17 +1166,19 @@ void drawFollowOverlay() {
     int x = 0;
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
-    priv = target.is_private;
+    small_livery = usesSmallLivery(target);
     const AircraftIconSet& icon = iconFor(target);
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector,
+                    small_livery ? radar::kColorTrackVectorPrivate
+                                 : radar::kColorTrackVector,
                     icon.half);
     drawAircraftIcon(x, y, target.nose_deg, icon);
     s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx,
-                       priv ? radar::kColorAircraftPrivate : radar::kColorAircraft);
+                       small_livery ? radar::kColorAircraftPrivate
+                                    : radar::kColorAircraft);
     drawAircraftTag(x, y, target);
   }
-  drawFollowPanel(priv);
+  drawFollowPanel(small_livery);
 }
 
 template <typename Gfx>

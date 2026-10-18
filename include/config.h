@@ -13,7 +13,7 @@ constexpr char kPortalIp[] = "192.168.4.1";
 constexpr char kPortalHostname[] = "plane-radar";
 constexpr char kPortalHostUrl[] = "plane-radar.local";
 /** Caption on the boot IP splash, above the address. */
-constexpr char kSplashLabel[] = "Config portal";
+constexpr char kSplashLabel[] = "Config Portal";
 
 /** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
 constexpr unsigned long kWifiConnectAttemptMs = 15000;

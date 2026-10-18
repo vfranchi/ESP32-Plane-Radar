@@ -64,9 +64,9 @@ constexpr int kSplashTextMaxWidthPx = 152;
 /** Slide in from above, hold, slide out — one step per radar frame (4 Hz). */
 constexpr unsigned long kSplashSlideMs = 750;
 /** Border colour of the plate; same cyan as the type tag. */
-constexpr uint8_t kSplashBorderR = 170;
-constexpr uint8_t kSplashBorderG = 240;
-constexpr uint8_t kSplashBorderB = 255;
+constexpr uint8_t kSplashBorderR = 250;
+constexpr uint8_t kSplashBorderG = 204;
+constexpr uint8_t kSplashBorderB = 60;
 
 /** ADS-B fetch in progress: red dot beside the "N" cardinal label. */
 constexpr int kFetchDotRadiusPx = 3;

@@ -54,8 +54,11 @@ constexpr int kAircraftSymbolHalfPx = 14;
 
 /** IP splash plate, centred on the disc, drawn over the running radar. */
 constexpr int kSplashPlateWidthPx = 176;
-constexpr int kSplashPlateHeightPx = 46;
+constexpr int kSplashPlateHeightPx = 64;
 constexpr int kSplashPlateRadiusPx = 9;
+/** Caption and address baselines, measured from the top of the plate (px). */
+constexpr int kSplashCaptionOffsetPx = 18;
+constexpr int kSplashAddressOffsetPx = 44;
 /** The IP must fit this width; the font shrinks until it does. */
 constexpr int kSplashTextMaxWidthPx = 152;
 /** Slide in from above, hold, slide out — one step per radar frame (4 Hz). */

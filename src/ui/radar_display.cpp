@@ -1248,6 +1248,18 @@ int splashOffsetY(unsigned long elapsed) {
   return 0;
 }
 
+/** Largest smooth glyph size (down to `min_size`) at which `text` fits `max_w`. */
+void applyFittingSmoothSize(const char* text, float start, float min_size, int max_w) {
+  float size = start;
+  for (; size > min_size; size -= 0.1f) {
+    displayFontSetSmoothSize(*s_draw, size);
+    if (s_draw->textWidth(text) <= max_w) {
+      break;
+    }
+  }
+  displayFontSetSmoothSize(*s_draw, size);
+}
+
 void drawIpSplash() {
   if (!s_splash_active) {
     return;
@@ -1266,23 +1278,27 @@ void drawIpSplash() {
                         radar::kColorBackground);
   s_draw->drawRoundRect(x, y, w, h, radar::kSplashPlateRadiusPx, s_splash_border);
 
-  // Biggest smooth glyph size the address fits in; the bitmap font is the fallback
-  // when the VLW file could not be loaded.
+  // Two lines: what the address is for, then the address itself. Both shrink to
+  // fit; the bitmap fonts are the fallback when the VLW file could not load.
+  s_draw->setTextDatum(textdatum_t::middle_center);
   if (displayFontIsSmooth()) {
-    float size = 1.6f;
-    for (; size > 0.9f; size -= 0.1f) {
-      displayFontSetSmoothSize(*s_draw, size);
-      if (s_draw->textWidth(s_splash_ip) <= radar::kSplashTextMaxWidthPx) {
-        break;
-      }
-    }
-    displayFontSetSmoothSize(*s_draw, size);
+    applyFittingSmoothSize(config::kSplashLabel, 0.85f, 0.6f,
+                           radar::kSplashTextMaxWidthPx);
+  } else {
+    displayFontSetBitmap(*s_draw, &fonts::FreeSans9pt7b);
+  }
+  s_draw->setTextColor(s_splash_border, radar::kColorBackground);
+  s_draw->drawString(config::kSplashLabel, radar::kCenterX,
+                     y + radar::kSplashCaptionOffsetPx);
+
+  if (displayFontIsSmooth()) {
+    applyFittingSmoothSize(s_splash_ip, 1.6f, 0.9f, radar::kSplashTextMaxWidthPx);
   } else {
     displayFontSetBitmap(*s_draw, &fonts::FreeSansBold12pt7b);
   }
-  s_draw->setTextDatum(textdatum_t::middle_center);
   s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
-  s_draw->drawString(s_splash_ip, radar::kCenterX, y + h / 2);
+  s_draw->drawString(s_splash_ip, radar::kCenterX,
+                     y + radar::kSplashAddressOffsetPx);
   s_draw->setTextDatum(textdatum_t::top_left);
 }
 

@@ -15,4 +15,15 @@ void radarDisplayDumpFrame();
 /** Redraw aircraft only (blits cached grid; no full-screen clear). */
 void radarDisplayRefreshAircraft();
 
+/**
+ * Show the device's local IP as an overlay plate over the radar for `duration_ms`,
+ * sliding in and out. Called once after the first Wi-Fi connect, so whoever walks
+ * up to the device can read the config portal's address. An empty or 0.0.0.0
+ * address arms nothing.
+ */
+void radarDisplayShowIpSplash(const char* ip, unsigned long duration_ms);
+
+/** True while the splash is still being drawn (diagnostics / bench checks). */
+bool radarDisplaySplashActive();
+
 }  // namespace ui

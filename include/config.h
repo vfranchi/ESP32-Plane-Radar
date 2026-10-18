@@ -45,6 +45,12 @@ constexpr bool kDisplayInvert = true;
 constexpr bool kDisplayRgbOrder = true;
 
 // --- Radar center defaults (overridden via WiFi setup portal) ---
+/**
+ * How long the local IP stays on screen after the first Wi-Fi connect. It is the
+ * only way to read the config portal's address off the device itself.
+ */
+constexpr unsigned long kSplashIpDurationMs = 7000;
+
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 

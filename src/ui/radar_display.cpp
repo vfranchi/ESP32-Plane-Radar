@@ -1222,6 +1222,70 @@ bool ensureFrameSprite() {
   return true;
 }
 
+// --- IP splash ------------------------------------------------------------------
+// Shown once after the first Wi-Fi connect: the config portal lives on the device's
+// own LAN address, and the screen is the only place a person standing next to the
+// radar can read it. Drawn inside the frame sprite, so it costs no extra render
+// pass and the radar keeps updating underneath it.
+
+char s_splash_ip[16];
+unsigned long s_splash_start_ms = 0;
+unsigned long s_splash_duration_ms = 0;
+bool s_splash_active = false;
+uint16_t s_splash_border = 0xFFFF;
+
+/** Vertical offset of the plate for this frame: slides in, holds, slides out. */
+int splashOffsetY(unsigned long elapsed) {
+  const unsigned long slide = radar::kSplashSlideMs;
+  const int travel = radar::kSplashPlateHeightPx + 8;
+  if (elapsed < slide) {
+    return -static_cast<int>((travel * (slide - elapsed)) / slide);
+  }
+  if (elapsed + slide > s_splash_duration_ms) {
+    const unsigned long left = s_splash_duration_ms - elapsed;
+    return -static_cast<int>((travel * (slide - left)) / slide);
+  }
+  return 0;
+}
+
+void drawIpSplash() {
+  if (!s_splash_active) {
+    return;
+  }
+  const unsigned long elapsed = millis() - s_splash_start_ms;
+  if (elapsed >= s_splash_duration_ms) {
+    s_splash_active = false;
+    return;
+  }
+
+  const int w = radar::kSplashPlateWidthPx;
+  const int h = radar::kSplashPlateHeightPx;
+  const int x = radar::kCenterX - w / 2;
+  const int y = radar::kCenterY - h / 2 + splashOffsetY(elapsed);
+  s_draw->fillRoundRect(x, y, w, h, radar::kSplashPlateRadiusPx,
+                        radar::kColorBackground);
+  s_draw->drawRoundRect(x, y, w, h, radar::kSplashPlateRadiusPx, s_splash_border);
+
+  // Biggest smooth glyph size the address fits in; the bitmap font is the fallback
+  // when the VLW file could not be loaded.
+  if (displayFontIsSmooth()) {
+    float size = 1.6f;
+    for (; size > 0.9f; size -= 0.1f) {
+      displayFontSetSmoothSize(*s_draw, size);
+      if (s_draw->textWidth(s_splash_ip) <= radar::kSplashTextMaxWidthPx) {
+        break;
+      }
+    }
+    displayFontSetSmoothSize(*s_draw, size);
+  } else {
+    displayFontSetBitmap(*s_draw, &fonts::FreeSansBold12pt7b);
+  }
+  s_draw->setTextDatum(textdatum_t::middle_center);
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  s_draw->drawString(s_splash_ip, radar::kCenterX, y + h / 2);
+  s_draw->setTextDatum(textdatum_t::top_left);
+}
+
 // Double-buffered frame: composite the grid AND aircraft into the off-screen
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
@@ -1245,6 +1309,7 @@ void renderFrame() {
     }
     // Last, so the readout plate sits over rings, runway labels and aircraft.
     drawSignalLabel();
+    drawIpSplash();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
@@ -1312,6 +1377,21 @@ void radarDisplayDraw() {
   drawSignalLabel();
   tft.setTextDatum(textdatum_t::top_left);
 }
+
+void radarDisplayShowIpSplash(const char* ip, unsigned long duration_ms) {
+  if (ip == nullptr || ip[0] == '\0' || duration_ms == 0) {
+    s_splash_active = false;
+    return;
+  }
+  snprintf(s_splash_ip, sizeof(s_splash_ip), "%s", ip);
+  s_splash_border = panelColor565(radar::kSplashBorderR, radar::kSplashBorderG,
+                                  radar::kSplashBorderB);
+  s_splash_duration_ms = duration_ms;
+  s_splash_start_ms = millis();
+  s_splash_active = true;
+}
+
+bool radarDisplaySplashActive() { return s_splash_active; }
 
 void radarDisplayRefreshAircraft() {
   initPalette();

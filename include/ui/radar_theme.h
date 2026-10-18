@@ -52,6 +52,19 @@ constexpr int kHelicopterIconHalfPx = kHelicopterIconSizePx / 2;
 /** Tag clearance from the symbol centre; clears the icon at any rotation (px). */
 constexpr int kAircraftSymbolHalfPx = 14;
 
+/** IP splash plate, centred on the disc, drawn over the running radar. */
+constexpr int kSplashPlateWidthPx = 176;
+constexpr int kSplashPlateHeightPx = 46;
+constexpr int kSplashPlateRadiusPx = 9;
+/** The IP must fit this width; the font shrinks until it does. */
+constexpr int kSplashTextMaxWidthPx = 152;
+/** Slide in from above, hold, slide out — one step per radar frame (4 Hz). */
+constexpr unsigned long kSplashSlideMs = 750;
+/** Border colour of the plate; same cyan as the type tag. */
+constexpr uint8_t kSplashBorderR = 170;
+constexpr uint8_t kSplashBorderG = 240;
+constexpr uint8_t kSplashBorderB = 255;
+
 /** ADS-B fetch in progress: red dot beside the "N" cardinal label. */
 constexpr int kFetchDotRadiusPx = 3;
 /** Gap between the "N" glyph and the dot (px). */

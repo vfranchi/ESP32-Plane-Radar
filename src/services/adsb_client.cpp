@@ -17,6 +17,7 @@
 
 #include "config.h"
 #include "services/http_body_framing.h"
+#include "ui/altitude_color.h"
 
 namespace services::adsb {
 
@@ -288,10 +289,14 @@ void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
 }
 
 void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len,
-                       bool* on_ground) {
+                       bool* on_ground, uint16_t* out_alt_ft) {
   out[0] = '\0';
   if (on_ground != nullptr) {
     *on_ground = false;
+  }
+  if (out_alt_ft != nullptr) {
+    // "ground" and a missing field are both "no altitude number": drawn neutral.
+    *out_alt_ft = ui::altitude::kUnknownAltFt;
   }
   if (out_len == 0) {
     return;
@@ -312,7 +317,18 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len,
   float alt = 0.0f;
   if (readJsonFloat(plane, "alt_baro", &alt) ||
       readJsonFloat(plane, "alt_geom", &alt)) {
-    snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
+    const int alt_int = static_cast<int>(lroundf(alt));
+    snprintf(out, out_len, "%d ft", alt_int);
+    if (out_alt_ft != nullptr) {
+      // Clamp into the 16-bit field; the colour only cares which step it lands in.
+      if (alt_int < 0) {
+        *out_alt_ft = 0;
+      } else if (alt_int > 60000) {
+        *out_alt_ft = 60000;
+      } else {
+        *out_alt_ft = static_cast<uint16_t>(alt_int);
+      }
+    }
     // "0 ft" from a receiver that does not send the "ground" token is still the apron.
     if (on_ground != nullptr && alt < kOnGroundAltFt) {
       *on_ground = true;
@@ -351,7 +367,7 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   }
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
-  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground);
+  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground, &ac->alt_ft);
   ac->is_private = isPrivateAircraft(plane, ac->callsign);
   ac->is_helicopter = isHelicopterAircraft(plane);
 }

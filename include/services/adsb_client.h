@@ -31,6 +31,13 @@ struct Aircraft {
   char type[5];
   char alt[12];
   /**
+   * Barometric (or geometric) altitude in ft, or ui::altitude::kUnknownAltFt
+   * when the feed sent no number ("ground", or no alt_baro/alt_geom). Drives the
+   * icon colour -- see ui/altitude_color.h. uint16_t, not int16_t: 60000 ft does
+   * not fit a signed 16-bit field.
+   */
+  uint16_t alt_ft;
+  /**
    * Light/small aircraft: ADS-B emitter category A1/A2, or an N-number callsign
    * when the transponder reports no category. Set at parse time, so no extra
    * request is needed to tell a Cessna from a 737.

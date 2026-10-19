@@ -17,6 +17,7 @@
 #include "services/flight_follow.h"
 #include "services/radar_location.h"
 #include "ui/aircraft_icon_data.h"
+#include "ui/altitude_color.h"
 #include "ui/radar_line.h"
 #include "ui/radar_projection.h"
 #include "ui/radar_range.h"
@@ -31,15 +32,11 @@ uint16_t kColorGrid = 0x0320;
 uint16_t kColorLabel = 0xFFFF;
 uint16_t kColorCenter = 0xFFFF;
 uint16_t kColorFetchDot = 0xF800;
-uint16_t kColorAircraft = 0x001F;
 uint16_t kColorTrackVector = 0xFFFF;
-uint16_t kColorAircraftPrivate = 0x07E0;
-uint16_t kColorTrackVectorPrivate = 0xFD20;
 uint16_t kColorTagType = 0x5DFF;
 uint16_t kColorTagAltitude = 0xFFE0;
 uint16_t kColorRunway = 0x4D5F;
 uint16_t kColorRunwayLabel = 0x7DFF;
-uint16_t kColorTrail = 0x7388;  // the aircraft colour, dimmed; set in initPalette
 
 }  // namespace radar
 
@@ -222,8 +219,10 @@ uint16_t panelColor565(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 // Must be a LovyanGFX colour class: pixelcopy calls pal[i].get().
-lgfx::rgb565_t s_icon_palette[16];
-lgfx::rgb565_t s_icon_palette_private[16];
+// One scratch palette, rebuilt per aircraft from its altitude and reused for the
+// next blit: pushImage has already copied the pixels into the sprite by then.
+// Costs 32 B instead of a palette per colour, and tracks the ramp exactly.
+lgfx::rgb565_t s_scratch_palette[16];
 
 /**
  * Build a 16-entry icon palette: index 0 is the transparent key, 1..15 are the
@@ -241,21 +240,32 @@ void fillIconPalette(lgfx::rgb565_t* pal, uint8_t r0, uint8_t g0, uint8_t b0) {
   pal[0] = panelColor565(radar::kBgR, radar::kBgG, radar::kBgB);
 }
 
-void initAircraftIconPalette() {
-  fillIconPalette(s_icon_palette, radar::kAircraftR, radar::kAircraftG,
-                  radar::kAircraftB);
-  fillIconPalette(s_icon_palette_private, radar::kPrivateAircraftR,
-                  radar::kPrivateAircraftG, radar::kPrivateAircraftB);
+/** Palette index whose alpha matches the old follow trail (~40 % over the background). */
+constexpr int kTrailPaletteIndex = 6;
+
+/** Scratch palette holding this aircraft's colour; valid until the next call. */
+const lgfx::rgb565_t* iconPaletteForAltFt(uint16_t alt_ft) {
+  const ui::altitude::Rgb c = ui::altitude::colorForAltFt(alt_ft);
+  fillIconPalette(s_scratch_palette, c.r, c.g, c.b);
+  return s_scratch_palette;
+}
+
+/** Solid colour of an aircraft at this altitude (dots, rings, panel title). */
+uint16_t aircraftColorForAltFt(uint16_t alt_ft) {
+  return iconPaletteForAltFt(alt_ft)[15].get();
+}
+
+/** Follow trail colour: the altitude colour dimmed over the radar background. */
+uint16_t trailColorForAltFt(uint16_t alt_ft) {
+  return iconPaletteForAltFt(alt_ft)[kTrailPaletteIndex].get();
 }
 
 /**
- * One pre-rendered icon set: the bitmap, the palette it blits with, and the
- * geometry that follows from its size. The two sets differ only in scale --
- * the silhouette, the 72 rotations and the transparent key are shared.
+ * One pre-rendered icon set: the bitmap and the geometry that follows from its
+ * size. The palette comes from the aircraft's altitude, not from the icon.
  */
 struct AircraftIconSet {
   const uint8_t* blob;
-  const lgfx::rgb565_t* palette;
   int size;
   int bytes_per_rotation;
   /** Blit offset from the aircraft position, and where its speed vector starts. */
@@ -263,29 +273,18 @@ struct AircraftIconSet {
 };
 
 const AircraftIconSet s_icon_airliner = {
-    data::aircraft_icon::kIcon, s_icon_palette, data::aircraft_icon::kSize,
+    data::aircraft_icon::kIcon, data::aircraft_icon::kSize,
     data::aircraft_icon::kBytesPerRotation, radar::kAircraftIconHalfPx};
 
 const AircraftIconSet s_icon_private = {
-    data::aircraft_icon_small::kIcon, s_icon_palette_private,
-    data::aircraft_icon_small::kSize, data::aircraft_icon_small::kBytesPerRotation,
-    radar::kPrivateAircraftIconHalfPx};
+    data::aircraft_icon_small::kIcon, data::aircraft_icon_small::kSize,
+    data::aircraft_icon_small::kBytesPerRotation, radar::kPrivateAircraftIconHalfPx};
 
-// Small box and the small-aircraft palette: the rotorcrafts wear the same livery
-// as the light aircraft (the rotor is what tells them apart), so one palette
-// serves both and there is no third colour competing with the tags.
+// Small box: the rotorcrafts share the light-aircraft size (the rotor tells them
+// apart), so one icon set serves both.
 const AircraftIconSet s_icon_helicopter = {
-    data::helicopter_icon::kIcon, s_icon_palette_private, data::helicopter_icon::kSize,
+    data::helicopter_icon::kIcon, data::helicopter_icon::kSize,
     data::helicopter_icon::kBytesPerRotation, radar::kHelicopterIconHalfPx};
-
-/**
- * True for the aircraft wearing the small-aircraft livery: the same icon colour,
- * rim dot and speed vector as a light aircraft. Rotorcraft share it because they
- * are drawn at the same size, so a third colour would only add noise.
- */
-bool usesSmallLivery(const services::adsb::Aircraft& plane) {
-  return plane.is_private || plane.is_helicopter;
-}
 
 /** The icon a given aircraft is drawn with. */
 const AircraftIconSet& iconFor(const services::adsb::Aircraft& plane) {
@@ -304,15 +303,10 @@ void initPalette() {
   // BGR panel, so they are left untouched. The colours below must render as
   // named, so they go through panelColor565 -- without it, a logical cyan comes
   // out yellow on screen (that was the original tag bug).
-  radar::kColorAircraft = panelColor565(radar::kAircraftR, radar::kAircraftG,
-                                        radar::kAircraftB);
+  // Aircraft colours are altitude-derived: see ui/altitude_color.h.
   // Magenta is R==B, so the swap is a no-op here.
   radar::kColorTrackVector =
       tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
-  radar::kColorAircraftPrivate = panelColor565(
-      radar::kPrivateAircraftR, radar::kPrivateAircraftG, radar::kPrivateAircraftB);
-  radar::kColorTrackVectorPrivate = panelColor565(
-      radar::kPrivateTrackR, radar::kPrivateTrackG, radar::kPrivateTrackB);
   radar::kColorFetchDot = panelColor565(radar::kFetchDotR, radar::kFetchDotG,
                                         radar::kFetchDotB);
   radar::kColorTagType =
@@ -323,10 +317,6 @@ void initPalette() {
       tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
   radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
                                           radar::kRunwayLabelB);
-  // Same pre-blend the icon palette uses, so the trail belongs to the followed aircraft
-  // without competing with it. panelColor565 because the panel is BGR.
-  radar::kColorTrail = panelColor565(radar::kTrailR, radar::kTrailG, radar::kTrailB);
-  initAircraftIconPalette();
 }
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
@@ -495,15 +485,15 @@ int aircraftIconIndex(float heading_deg) {
   return idx < 0 ? idx + data::aircraft_icon::kRotations : idx;
 }
 
-void drawAircraftIcon(int cx, int cy, float heading_deg,
-                      const AircraftIconSet& set) {
+void drawAircraftIcon(int cx, int cy, float heading_deg, const AircraftIconSet& set,
+                      const lgfx::rgb565_t* palette) {
   const int idx = aircraftIconIndex(heading_deg);
   const uint8_t* rot = set.blob +
                        static_cast<size_t>(idx) * set.bytes_per_rotation;
   const int off = -set.half;
   s_draw->pushImage(cx + off, cy + off, set.size, set.size, rot,
                     data::aircraft_icon::kTransparentIndex,
-                    lgfx::color_depth_t::palette_4bit, set.palette);
+                    lgfx::color_depth_t::palette_4bit, palette);
 }
 
 void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
@@ -728,9 +718,7 @@ void drawAircraft() {
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
     dots[dot_count].dist_sq = distSqFromCenter(dot_x, dot_y);
-    dots[dot_count].color = usesSmallLivery(planes[i])
-                                ? radar::kColorAircraftPrivate
-                                : radar::kColorAircraft;
+    dots[dot_count].color = aircraftColorForAltFt(planes[i].alt_ft);
     ++dot_count;
   }
 
@@ -744,14 +732,11 @@ void drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
-    const bool small_livery = usesSmallLivery(planes[i]);
     const AircraftIconSet& icon = iconFor(planes[i]);
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
-                    planes[i].gs_knots,
-                    small_livery ? radar::kColorTrackVectorPrivate
-                                 : radar::kColorTrackVector,
-                    icon.half);
-    drawAircraftIcon(x, y, planes[i].nose_deg, icon);
+                    planes[i].gs_knots, radar::kColorTrackVector, icon.half);
+    drawAircraftIcon(x, y, planes[i].nose_deg, icon,
+                     iconPaletteForAltFt(planes[i].alt_ft));
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
@@ -974,7 +959,7 @@ bool trailPointOnScreen(float lat, float lon, int* x, int* y) {
  * polyline rather than being clipped onto the rim: the trail is history, and the ring is
  * not the world.
  */
-void drawFollowTrail() {
+void drawFollowTrail(uint16_t color) {
   const services::follow::Trail& trail = services::follow::trail();
   if (trail.size() < 2) {
     s_follow_trail_us = 0;
@@ -996,7 +981,7 @@ void drawFollowTrail() {
     }
     if (have_prev) {
       line::drawThick(*s_draw, prev_x, prev_y, x, y, radar::kFollowTrailHalfWidth,
-                      radar::kColorTrail);
+                      color);
     }
     prev_x = x;
     prev_y = y;
@@ -1118,7 +1103,7 @@ void layoutFollowPanel() {
 }
 
 /** Draws what layoutFollowPanel() measured, laying it out on demand if nobody did it first. */
-void drawFollowPanel(bool priv) {
+void drawFollowPanel(uint16_t title_color) {
   if (!s_follow_panel_laid_out) {
     layoutFollowPanel();
   }
@@ -1137,9 +1122,7 @@ void drawFollowPanel(bool priv) {
 
   int y = s_follow_panel_top + radar::kFollowPanelPadYPx;
   for (int i = 0; i < s_follow_panel_line_count; ++i) {
-    s_draw->setTextColor(i == 0 ? (priv ? radar::kColorAircraftPrivate
-                                        : radar::kColorAircraft)
-                                : radar::kColorLabel,
+    s_draw->setTextColor(i == 0 ? title_color : radar::kColorLabel,
                          radar::kColorBackground);
     s_draw->drawString(s_follow_panel_lines[i], radar::kCenterX, y);
     y += line_h + gap;
@@ -1157,28 +1140,26 @@ void drawFollowOverlay() {
   }
   services::adsb::Aircraft target{};
   const unsigned long base_ms = services::adsb::targetUpdateMs();
-  bool small_livery = false;
+  uint16_t title_color = radar::kColorLabel;
   if (base_ms != 0 && services::adsb::targetSnapshot(&target)) {
-    drawFollowTrail();
+    title_color = aircraftColorForAltFt(target.alt_ft);
+    drawFollowTrail(trailColorForAltFt(target.alt_ft));
     float lat = 0.0f;
     float lon = 0.0f;
     extrapolatedLatLon(target, base_ms, &lat, &lon);
     int x = 0;
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
-    small_livery = usesSmallLivery(target);
     const AircraftIconSet& icon = iconFor(target);
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
-                    small_livery ? radar::kColorTrackVectorPrivate
-                                 : radar::kColorTrackVector,
-                    icon.half);
-    drawAircraftIcon(x, y, target.nose_deg, icon);
+                    radar::kColorTrackVector, icon.half);
+    drawAircraftIcon(x, y, target.nose_deg, icon,
+                     iconPaletteForAltFt(target.alt_ft));
     s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx,
-                       small_livery ? radar::kColorAircraftPrivate
-                                    : radar::kColorAircraft);
+                       aircraftColorForAltFt(target.alt_ft));
     drawAircraftTag(x, y, target);
   }
-  drawFollowPanel(small_livery);
+  drawFollowPanel(title_color);
 }
 
 template <typename Gfx>

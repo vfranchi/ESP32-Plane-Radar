@@ -104,11 +104,6 @@ constexpr int kBeyondRingDotRadiusPx = 4;
 constexpr int kBeyondRingScreenMarginPx = 2;
 /** Target cap height (px) for aircraft tags (bold, slightly above scale label). */
 constexpr int kAircraftTagLabelHeightPx = 13;
-/** Follow trail: the aircraft colour, pre-blended over the radar background (~45%). */
-constexpr uint8_t kTrailR = 115;
-constexpr uint8_t kTrailG = 97;
-constexpr uint8_t kTrailB = 42;
-
 /** Follow info panel: a 3-line plate just above the "S" cardinal label. */
 constexpr int kFollowPanelPadXPx = 4;
 constexpr int kFollowPanelPadYPx = 2;
@@ -127,20 +122,13 @@ constexpr uint8_t kBgB = 28;
 constexpr uint8_t kGridR = 16;
 constexpr uint8_t kGridG = 100;
 constexpr uint8_t kGridB = 32;
-/** FlightRadar24-style warm yellow; the track vector stays magenta. */
-constexpr uint8_t kAircraftR = 250;
-constexpr uint8_t kAircraftG = 204;
-constexpr uint8_t kAircraftB = 60;
+/**
+ * Aircraft colours are altitude-derived (ui/altitude_color.h); only the track
+ * vector keeps a fixed colour. Magenta is R==B, so the BGR swap is a no-op here.
+ */
 constexpr uint8_t kTrackR = 255;
 constexpr uint8_t kTrackG = 0;
 constexpr uint8_t kTrackB = 255;
-/** Private / general aviation: green plane, orange track vector. */
-constexpr uint8_t kPrivateAircraftR = 0;
-constexpr uint8_t kPrivateAircraftG = 255;
-constexpr uint8_t kPrivateAircraftB = 80;
-constexpr uint8_t kPrivateTrackR = 255;
-constexpr uint8_t kPrivateTrackG = 140;
-constexpr uint8_t kPrivateTrackB = 0;
 /** Light cyan; a yellow type tag would vanish against the yellow icon. */
 constexpr uint8_t kTagTypeR = 170;
 constexpr uint8_t kTagTypeG = 240;
@@ -164,15 +152,10 @@ extern uint16_t kColorGrid;
 extern uint16_t kColorLabel;
 extern uint16_t kColorCenter;
 extern uint16_t kColorFetchDot;
-extern uint16_t kColorAircraft;
 extern uint16_t kColorTrackVector;
-extern uint16_t kColorAircraftPrivate;
-extern uint16_t kColorTrackVectorPrivate;
 extern uint16_t kColorTagType;
 extern uint16_t kColorTagAltitude;
 extern uint16_t kColorRunway;
 extern uint16_t kColorRunwayLabel;
-/** Follow trail: the aircraft colour dimmed toward the background. */
-extern uint16_t kColorTrail;
 
 }  // namespace ui::radar

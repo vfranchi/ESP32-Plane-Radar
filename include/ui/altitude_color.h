@@ -75,8 +75,14 @@ constexpr Step kRamp[kRampCount] = {
 };
 // </generated: ramp>
 
-/** Colour for an altitude in ft; neutral grey when unknown. */
-constexpr Rgb colorForAltFt(uint16_t alt_ft) {
+/**
+ * Colour for an altitude in ft; neutral grey when unknown.
+ *
+ * Not constexpr: the framework appends -std=gnu++11 to the compile line (after
+ * the project's gnu++17), so a looping constexpr function is rejected on the
+ * device -- the host tests build with -std=c++17 and do not catch that.
+ */
+inline Rgb colorForAltFt(uint16_t alt_ft) {
   if (alt_ft == kUnknownAltFt) {
     return kNeutral;
   }

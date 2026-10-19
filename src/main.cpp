@@ -37,6 +37,23 @@ void showRadarIfConnected() {
   g_radar_visible = true;
 }
 
+/**
+ * Put the device's LAN address on screen for a few seconds after the first Wi-Fi
+ * connect: it is where the config portal lives, and the only way to read it from
+ * the device itself. Skipped when there is no address yet.
+ */
+void showIpSplashOnce() {
+  const IPAddress ip = WiFi.localIP();
+  if (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) {
+    return;
+  }
+  char text[16];
+  snprintf(text, sizeof(text), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+  Serial.printf("splash: showing %s for %lu ms\n", text,
+                config::kSplashIpDurationMs);
+  ui::radarDisplayShowIpSplash(text, config::kSplashIpDurationMs);
+}
+
 void onRangeTap() {
   ui::radar::rangeNext();
   char range_label[12];
@@ -211,6 +228,9 @@ void setup() {
   services::mqtt::init();
 
   if (wifiSetupConnect()) {
+    // Armed before the first draw, so the very first frame already carries it.
+    // Boot only: a mid-session reconnect must not drop a plate on the user.
+    showIpSplashOnce();
     showRadarIfConnected();
   }
 

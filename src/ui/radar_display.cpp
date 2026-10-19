@@ -248,6 +248,53 @@ void initAircraftIconPalette() {
                   radar::kPrivateAircraftG, radar::kPrivateAircraftB);
 }
 
+/**
+ * One pre-rendered icon set: the bitmap, the palette it blits with, and the
+ * geometry that follows from its size. The two sets differ only in scale --
+ * the silhouette, the 72 rotations and the transparent key are shared.
+ */
+struct AircraftIconSet {
+  const uint8_t* blob;
+  const lgfx::rgb565_t* palette;
+  int size;
+  int bytes_per_rotation;
+  /** Blit offset from the aircraft position, and where its speed vector starts. */
+  int half;
+};
+
+const AircraftIconSet s_icon_airliner = {
+    data::aircraft_icon::kIcon, s_icon_palette, data::aircraft_icon::kSize,
+    data::aircraft_icon::kBytesPerRotation, radar::kAircraftIconHalfPx};
+
+const AircraftIconSet s_icon_private = {
+    data::aircraft_icon_small::kIcon, s_icon_palette_private,
+    data::aircraft_icon_small::kSize, data::aircraft_icon_small::kBytesPerRotation,
+    radar::kPrivateAircraftIconHalfPx};
+
+// Small box and the small-aircraft palette: the rotorcrafts wear the same livery
+// as the light aircraft (the rotor is what tells them apart), so one palette
+// serves both and there is no third colour competing with the tags.
+const AircraftIconSet s_icon_helicopter = {
+    data::helicopter_icon::kIcon, s_icon_palette_private, data::helicopter_icon::kSize,
+    data::helicopter_icon::kBytesPerRotation, radar::kHelicopterIconHalfPx};
+
+/**
+ * True for the aircraft wearing the small-aircraft livery: the same icon colour,
+ * rim dot and speed vector as a light aircraft. Rotorcraft share it because they
+ * are drawn at the same size, so a third colour would only add noise.
+ */
+bool usesSmallLivery(const services::adsb::Aircraft& plane) {
+  return plane.is_private || plane.is_helicopter;
+}
+
+/** The icon a given aircraft is drawn with. */
+const AircraftIconSet& iconFor(const services::adsb::Aircraft& plane) {
+  if (plane.is_helicopter) {
+    return s_icon_helicopter;
+  }
+  return plane.is_private ? s_icon_private : s_icon_airliner;
+}
+
 void initPalette() {
   radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
   radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
@@ -424,15 +471,20 @@ int speedLineLengthPx(float gs_knots) {
   return len;
 }
 
-void noseTip(int cx, int cy, float heading_deg, int* tip_x, int* tip_y) {
+void noseTip(int cx, int cy, float heading_deg, int nose_len_px, int* tip_x,
+             int* tip_y) {
   constexpr float kDegToRad = 0.01745329252f;
   const float rad = heading_deg * kDegToRad;
-  *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * radar::kAircraftNoseLenPx));
-  *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * radar::kAircraftNoseLenPx));
+  *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * nose_len_px));
+  *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * nose_len_px));
 }
 
 static_assert(data::aircraft_icon::kSize == radar::kAircraftIconSizePx,
               "icon data and theme size disagree");
+static_assert(data::aircraft_icon_small::kSize == radar::kPrivateAircraftIconSizePx,
+              "private icon data and theme size disagree");
+static_assert(data::helicopter_icon::kSize == radar::kHelicopterIconSizePx,
+              "helicopter icon data and theme size disagree");
 
 /** Nearest pre-rendered rotation for a heading in degrees. */
 int aircraftIconIndex(float heading_deg) {
@@ -444,20 +496,18 @@ int aircraftIconIndex(float heading_deg) {
 }
 
 void drawAircraftIcon(int cx, int cy, float heading_deg,
-                      const lgfx::rgb565_t* palette = s_icon_palette) {
+                      const AircraftIconSet& set) {
   const int idx = aircraftIconIndex(heading_deg);
-  const uint8_t* rot = data::aircraft_icon::kIcon +
-                       static_cast<size_t>(idx) *
-                           data::aircraft_icon::kBytesPerRotation;
-  const int off = -radar::kAircraftIconHalfPx;
-  s_draw->pushImage(cx + off, cy + off, data::aircraft_icon::kSize,
-                    data::aircraft_icon::kSize, rot,
+  const uint8_t* rot = set.blob +
+                       static_cast<size_t>(idx) * set.bytes_per_rotation;
+  const int off = -set.half;
+  s_draw->pushImage(cx + off, cy + off, set.size, set.size, rot,
                     data::aircraft_icon::kTransparentIndex,
-                    lgfx::color_depth_t::palette_4bit, palette);
+                    lgfx::color_depth_t::palette_4bit, set.palette);
 }
 
 void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
-                     float gs_knots, uint16_t color) {
+                     float gs_knots, uint16_t color, int nose_len_px) {
   const int len = speedLineLengthPx(gs_knots);
   if (len <= 0) {
     return;
@@ -465,7 +515,7 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
 
   int tip_x = 0;
   int tip_y = 0;
-  noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
+  noseTip(cx, cy, heading_deg, nose_len_px, &tip_x, &tip_y);
 
   constexpr float kDegToRad = 0.01745329252f;
   const float rad = track_deg * kDegToRad;
@@ -678,8 +728,9 @@ void drawAircraft() {
     dots[dot_count].x = dot_x;
     dots[dot_count].y = dot_y;
     dots[dot_count].dist_sq = distSqFromCenter(dot_x, dot_y);
-    dots[dot_count].color = planes[i].is_private ? radar::kColorAircraftPrivate
-                                                 : radar::kColorAircraft;
+    dots[dot_count].color = usesSmallLivery(planes[i])
+                                ? radar::kColorAircraftPrivate
+                                : radar::kColorAircraft;
     ++dot_count;
   }
 
@@ -693,12 +744,14 @@ void drawAircraft() {
     const size_t i = items[d].index;
     const int x = items[d].x;
     const int y = items[d].y;
-    const bool priv = planes[i].is_private;
+    const bool small_livery = usesSmallLivery(planes[i]);
+    const AircraftIconSet& icon = iconFor(planes[i]);
     drawSpeedVector(x, y, planes[i].nose_deg, planes[i].track_deg,
                     planes[i].gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
-    drawAircraftIcon(x, y, planes[i].nose_deg,
-                     priv ? s_icon_palette_private : s_icon_palette);
+                    small_livery ? radar::kColorTrackVectorPrivate
+                                 : radar::kColorTrackVector,
+                    icon.half);
+    drawAircraftIcon(x, y, planes[i].nose_deg, icon);
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
@@ -1104,7 +1157,7 @@ void drawFollowOverlay() {
   }
   services::adsb::Aircraft target{};
   const unsigned long base_ms = services::adsb::targetUpdateMs();
-  bool priv = false;
+  bool small_livery = false;
   if (base_ms != 0 && services::adsb::targetSnapshot(&target)) {
     drawFollowTrail();
     float lat = 0.0f;
@@ -1113,16 +1166,19 @@ void drawFollowOverlay() {
     int x = 0;
     int y = 0;
     latLonToScreen(lat, lon, &x, &y);
-    priv = target.is_private;
+    small_livery = usesSmallLivery(target);
+    const AircraftIconSet& icon = iconFor(target);
     drawSpeedVector(x, y, target.nose_deg, target.track_deg, target.gs_knots,
-                    priv ? radar::kColorTrackVectorPrivate : radar::kColorTrackVector);
-    drawAircraftIcon(x, y, target.nose_deg,
-                     priv ? s_icon_palette_private : s_icon_palette);
+                    small_livery ? radar::kColorTrackVectorPrivate
+                                 : radar::kColorTrackVector,
+                    icon.half);
+    drawAircraftIcon(x, y, target.nose_deg, icon);
     s_draw->drawCircle(x, y, radar::kAircraftSymbolHalfPx,
-                       priv ? radar::kColorAircraftPrivate : radar::kColorAircraft);
+                       small_livery ? radar::kColorAircraftPrivate
+                                    : radar::kColorAircraft);
     drawAircraftTag(x, y, target);
   }
-  drawFollowPanel(priv);
+  drawFollowPanel(small_livery);
 }
 
 template <typename Gfx>
@@ -1166,6 +1222,86 @@ bool ensureFrameSprite() {
   return true;
 }
 
+// --- IP splash ------------------------------------------------------------------
+// Shown once after the first Wi-Fi connect: the config portal lives on the device's
+// own LAN address, and the screen is the only place a person standing next to the
+// radar can read it. Drawn inside the frame sprite, so it costs no extra render
+// pass and the radar keeps updating underneath it.
+
+char s_splash_ip[16];
+unsigned long s_splash_start_ms = 0;
+unsigned long s_splash_duration_ms = 0;
+bool s_splash_active = false;
+uint16_t s_splash_border = 0xFFFF;
+
+/** Vertical offset of the plate for this frame: slides in, holds, slides out. */
+int splashOffsetY(unsigned long elapsed) {
+  const unsigned long slide = radar::kSplashSlideMs;
+  const int travel = radar::kSplashPlateHeightPx + 8;
+  if (elapsed < slide) {
+    return -static_cast<int>((travel * (slide - elapsed)) / slide);
+  }
+  if (elapsed + slide > s_splash_duration_ms) {
+    const unsigned long left = s_splash_duration_ms - elapsed;
+    return -static_cast<int>((travel * (slide - left)) / slide);
+  }
+  return 0;
+}
+
+/** Largest smooth glyph size (down to `min_size`) at which `text` fits `max_w`. */
+void applyFittingSmoothSize(const char* text, float start, float min_size, int max_w) {
+  float size = start;
+  for (; size > min_size; size -= 0.1f) {
+    displayFontSetSmoothSize(*s_draw, size);
+    if (s_draw->textWidth(text) <= max_w) {
+      break;
+    }
+  }
+  displayFontSetSmoothSize(*s_draw, size);
+}
+
+void drawIpSplash() {
+  if (!s_splash_active) {
+    return;
+  }
+  const unsigned long elapsed = millis() - s_splash_start_ms;
+  if (elapsed >= s_splash_duration_ms) {
+    s_splash_active = false;
+    return;
+  }
+
+  const int w = radar::kSplashPlateWidthPx;
+  const int h = radar::kSplashPlateHeightPx;
+  const int x = radar::kCenterX - w / 2;
+  const int y = radar::kCenterY - h / 2 + splashOffsetY(elapsed);
+  s_draw->fillRoundRect(x, y, w, h, radar::kSplashPlateRadiusPx,
+                        radar::kColorBackground);
+  s_draw->drawRoundRect(x, y, w, h, radar::kSplashPlateRadiusPx, s_splash_border);
+
+  // Two lines: what the address is for, then the address itself. Both shrink to
+  // fit; the bitmap fonts are the fallback when the VLW file could not load.
+  s_draw->setTextDatum(textdatum_t::middle_center);
+  if (displayFontIsSmooth()) {
+    applyFittingSmoothSize(config::kSplashLabel, 0.85f, 0.6f,
+                           radar::kSplashTextMaxWidthPx);
+  } else {
+    displayFontSetBitmap(*s_draw, &fonts::FreeSans9pt7b);
+  }
+  s_draw->setTextColor(s_splash_border, radar::kColorBackground);
+  s_draw->drawString(config::kSplashLabel, radar::kCenterX,
+                     y + radar::kSplashCaptionOffsetPx);
+
+  if (displayFontIsSmooth()) {
+    applyFittingSmoothSize(s_splash_ip, 1.6f, 0.9f, radar::kSplashTextMaxWidthPx);
+  } else {
+    displayFontSetBitmap(*s_draw, &fonts::FreeSansBold12pt7b);
+  }
+  s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
+  s_draw->drawString(s_splash_ip, radar::kCenterX,
+                     y + radar::kSplashAddressOffsetPx);
+  s_draw->setTextDatum(textdatum_t::top_left);
+}
+
 // Double-buffered frame: composite the grid AND aircraft into the off-screen
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
@@ -1189,6 +1325,7 @@ void renderFrame() {
     }
     // Last, so the readout plate sits over rings, runway labels and aircraft.
     drawSignalLabel();
+    drawIpSplash();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
@@ -1256,6 +1393,21 @@ void radarDisplayDraw() {
   drawSignalLabel();
   tft.setTextDatum(textdatum_t::top_left);
 }
+
+void radarDisplayShowIpSplash(const char* ip, unsigned long duration_ms) {
+  if (ip == nullptr || ip[0] == '\0' || duration_ms == 0) {
+    s_splash_active = false;
+    return;
+  }
+  snprintf(s_splash_ip, sizeof(s_splash_ip), "%s", ip);
+  s_splash_border = panelColor565(radar::kSplashBorderR, radar::kSplashBorderG,
+                                  radar::kSplashBorderB);
+  s_splash_duration_ms = duration_ms;
+  s_splash_start_ms = millis();
+  s_splash_active = true;
+}
+
+bool radarDisplaySplashActive() { return s_splash_active; }
 
 void radarDisplayRefreshAircraft() {
   initPalette();

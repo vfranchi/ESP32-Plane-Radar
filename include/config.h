@@ -12,6 +12,8 @@ constexpr char kPortalIp[] = "192.168.4.1";
 /** mDNS host (no ".local" suffix); browser: http://plane-radar.local */
 constexpr char kPortalHostname[] = "plane-radar";
 constexpr char kPortalHostUrl[] = "plane-radar.local";
+/** Caption on the boot IP splash, above the address. */
+constexpr char kSplashLabel[] = "Config Portal";
 
 /** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
 constexpr unsigned long kWifiConnectAttemptMs = 15000;
@@ -45,6 +47,12 @@ constexpr bool kDisplayInvert = true;
 constexpr bool kDisplayRgbOrder = true;
 
 // --- Radar center defaults (overridden via WiFi setup portal) ---
+/**
+ * How long the local IP stays on screen after the first Wi-Fi connect. It is the
+ * only way to read the config portal's address off the device itself.
+ */
+constexpr unsigned long kSplashIpDurationMs = 7000;
+
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 

@@ -334,6 +334,16 @@ bool isPrivateAircraft(const JsonObject& plane, const char* callsign) {
   return callsign[0] == 'N' && isdigit(static_cast<unsigned char>(callsign[1]));
 }
 
+/**
+ * Rotorcraft: emitter category A7. No fallback -- a helicopter that reports no
+ * category is indistinguishable from a fixed wing here, and a type-code table
+ * would be a guess dressed up as data.
+ */
+bool isHelicopterAircraft(const JsonObject& plane) {
+  return plane["category"].is<const char*>() &&
+         strcmp(plane["category"].as<const char*>(), "A7") == 0;
+}
+
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
@@ -343,6 +353,7 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
   formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground);
   ac->is_private = isPrivateAircraft(plane, ac->callsign);
+  ac->is_helicopter = isHelicopterAircraft(plane);
 }
 
 /**

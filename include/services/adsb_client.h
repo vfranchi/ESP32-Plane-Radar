@@ -36,6 +36,11 @@ struct Aircraft {
    * request is needed to tell a Cessna from a 737.
    */
   bool is_private;
+  /**
+   * Rotorcraft: emitter category A7. Self-declared like A1/A2, so it is only as
+   * good as the transponder -- anything reporting A0 renders as a fixed wing.
+   */
+  bool is_helicopter;
 };
 
 constexpr size_t kMaxAircraft = 64;

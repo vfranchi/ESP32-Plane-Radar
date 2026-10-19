@@ -37,8 +37,36 @@ constexpr int kAircraftIconSizePx = 19;
 constexpr int kAircraftIconHalfPx = kAircraftIconSizePx / 2;
 /** Distance from the aircraft position to its nose tip = vector origin (px). */
 constexpr int kAircraftNoseLenPx = kAircraftIconHalfPx;
+/** Private/light aircraft draw the same silhouette smaller, so a Cessna and a 737
+ *  differ by shape as well as by colour. Must match data::aircraft_icon_small::kSize
+ *  (static_asserted in radar_display.cpp). */
+constexpr int kPrivateAircraftIconSizePx = 13;
+/** Half the private icon box: blit offset and speed-vector origin. */
+constexpr int kPrivateAircraftIconHalfPx = kPrivateAircraftIconSizePx / 2;
+/** Rotorcraft box, between the private (13) and airliner (19) sizes: big enough
+ *  for the rotor to separate from the body, small enough not to crowd a
+ *  neighbour. Must match data::helicopter_icon::kSize (static_asserted). */
+constexpr int kHelicopterIconSizePx = 15;
+/** Half the helicopter icon box: blit offset and speed-vector origin. */
+constexpr int kHelicopterIconHalfPx = kHelicopterIconSizePx / 2;
 /** Tag clearance from the symbol centre; clears the icon at any rotation (px). */
 constexpr int kAircraftSymbolHalfPx = 14;
+
+/** IP splash plate, centred on the disc, drawn over the running radar. */
+constexpr int kSplashPlateWidthPx = 176;
+constexpr int kSplashPlateHeightPx = 64;
+constexpr int kSplashPlateRadiusPx = 9;
+/** Caption and address baselines, measured from the top of the plate (px). */
+constexpr int kSplashCaptionOffsetPx = 18;
+constexpr int kSplashAddressOffsetPx = 44;
+/** The IP must fit this width; the font shrinks until it does. */
+constexpr int kSplashTextMaxWidthPx = 152;
+/** Slide in from above, hold, slide out — one step per radar frame (4 Hz). */
+constexpr unsigned long kSplashSlideMs = 750;
+/** Border colour of the plate; same cyan as the type tag. */
+constexpr uint8_t kSplashBorderR = 250;
+constexpr uint8_t kSplashBorderG = 204;
+constexpr uint8_t kSplashBorderB = 60;
 
 /** ADS-B fetch in progress: red dot beside the "N" cardinal label. */
 constexpr int kFetchDotRadiusPx = 3;

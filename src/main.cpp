@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include <cstring>
 
@@ -319,18 +320,29 @@ void loop() {
 
   // Printed outside every measured window, so neither number pays for its own log.
   if (g_redraw_us != 0) {
+#ifdef DEBUG
     if (g_redraw_full) {
       Serial.printf("redraw: %lu us (full)\n", g_redraw_us);
     } else {
       Serial.printf("redraw: %lu us\n", g_redraw_us);
     }
+#endif
     g_redraw_us = 0;
   }
 
   if (millis() - g_loop_log_ms >= 1000UL) {
     g_loop_log_ms = millis();
+#ifdef DEBUG
     Serial.printf("loop: avg %lu us, max %lu us, %lu iters\n",
                   g_loop_sum_us / g_loop_iters, g_loop_max_us, g_loop_iters);
+    // Largest free block, not just the free total: the TLS handshake needs one
+    // big contiguous chunk, so a healthy free heap with a small block still fails.
+    Serial.printf("heap %lu free of %lu, largest block %lu\n",
+                  static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned long>(ESP.getHeapSize()),
+                  static_cast<unsigned long>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+#endif
     g_loop_sum_us = 0;
     g_loop_max_us = 0;
     g_loop_iters = 0;

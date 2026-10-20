@@ -532,6 +532,10 @@ bool wifiReconnect() {
 // (ASSOC_LEAVE) and reason 15 (4WAY_HANDSHAKE_TIMEOUT) look identical from
 // WiFi.status() and mean completely different things, so the handler below is
 // what makes the line worth reading.
+//
+// Compiled only with DEBUG defined (platformio.ini); the quiet build has no
+// handler, no state and an empty tick.
+#ifdef DEBUG
 static bool s_wifi_log_attached = false;
 static bool s_wifi_log_seen = false;
 static wl_status_t s_wifi_log_status = WL_IDLE_STATUS;
@@ -635,6 +639,11 @@ void wifiStatusLogTick() {
   }
   logWifiStatusChange(status, ip);
 }
+
+#else
+/** Compiled out: define DEBUG (platformio.ini) to get the Wi-Fi transitions. */
+void wifiStatusLogTick() {}
+#endif
 
 void wifiLoop() {
   wifiStatusLogTick();

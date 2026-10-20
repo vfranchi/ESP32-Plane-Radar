@@ -523,7 +523,121 @@ bool wifiReconnect() {
   return connectSavedNetwork(true);
 }
 
+// --- Wi-Fi status log -------------------------------------------------------
+// One line per CHANGE, never per loop: a flapping link would otherwise fill the
+// log, and the serial write blocks at 115200 -- printing at 4 Hz would perturb
+// the frame budget it is supposed to be diagnosing.
+//
+// The disconnect REASON lives only in the event, not in WiFi.status(): reason 8
+// (ASSOC_LEAVE) and reason 15 (4WAY_HANDSHAKE_TIMEOUT) look identical from
+// WiFi.status() and mean completely different things, so the handler below is
+// what makes the line worth reading.
+static bool s_wifi_log_attached = false;
+static bool s_wifi_log_seen = false;
+static wl_status_t s_wifi_log_status = WL_IDLE_STATUS;
+static uint32_t s_wifi_log_ip = 0;
+static unsigned long s_wifi_log_since_ms = 0;
+static uint32_t s_wifi_drops = 0;
+static volatile uint8_t s_wifi_reason = 0;
+static volatile bool s_wifi_reason_fresh = false;
+
+static void onWifiStatusEvent(arduino_event_t* event) {
+  if (event != nullptr && event->event_id == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    s_wifi_reason = event->event_info.wifi_sta_disconnected.reason;
+    s_wifi_reason_fresh = true;
+    ++s_wifi_drops;
+  }
+}
+
+static const char* wifiStatusName(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS:
+      return "IDLE";
+    case WL_NO_SSID_AVAIL:
+      return "NO_SSID";
+    case WL_SCAN_COMPLETED:
+      return "SCAN_DONE";
+    case WL_CONNECTED:
+      return "CONNECTED";
+    case WL_CONNECT_FAILED:
+      return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST:
+      return "CONNECTION_LOST";
+    case WL_DISCONNECTED:
+      return "DISCONNECTED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+/** Whole IP as one word, so a DHCP renewal reads as a change too. */
+static uint32_t wifiIpWord() {
+  const IPAddress ip = WiFi.localIP();
+  return (static_cast<uint32_t>(ip[0]) << 24) | (static_cast<uint32_t>(ip[1]) << 16) |
+         (static_cast<uint32_t>(ip[2]) << 8) | static_cast<uint32_t>(ip[3]);
+}
+
+/** Seconds with one decimal, as printed in the log line. */
+static void formatSeconds(unsigned long ms, char* out, size_t out_len) {
+  snprintf(out, out_len, "%lu.%lu s", ms / 1000UL, (ms % 1000UL) / 100UL);
+}
+
+static void logWifiStatusChange(wl_status_t status, uint32_t ip) {
+  const bool known = s_wifi_log_seen;
+  char since[20];
+  formatSeconds(known ? millis() - s_wifi_log_since_ms : 0, since, sizeof(since));
+
+  if (status == WL_CONNECTED) {
+    if (known) {
+      Serial.printf("wifi: CONNECTED after %s down, ssid '%s' ip %s rssi %d dBm, drops %lu\n",
+                    since, WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
+                    static_cast<int>(WiFi.RSSI()),
+                    static_cast<unsigned long>(s_wifi_drops));
+    } else {
+      Serial.printf("wifi: CONNECTED (boot), ssid '%s' ip %s rssi %d dBm\n",
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
+                    static_cast<int>(WiFi.RSSI()));
+    }
+  } else {
+    // Reason is only meaningful when a drop event produced it; after a failed
+    // WiFi.begin() the driver may leave the previous reason in place.
+    if (s_wifi_reason_fresh) {
+      Serial.printf("wifi: %s after %s, reason %u (%s), drops %lu\n",
+                    wifiStatusName(status), known ? since : "boot",
+                    static_cast<unsigned>(s_wifi_reason),
+                    WiFi.disconnectReasonName(
+                        static_cast<wifi_err_reason_t>(s_wifi_reason)),
+                    static_cast<unsigned long>(s_wifi_drops));
+    } else {
+      Serial.printf("wifi: %s after %s, drops %lu\n", wifiStatusName(status),
+                    known ? since : "boot",
+                    static_cast<unsigned long>(s_wifi_drops));
+    }
+  }
+
+  s_wifi_reason_fresh = false;
+  s_wifi_log_seen = true;
+  s_wifi_log_status = status;
+  s_wifi_log_ip = ip;
+  s_wifi_log_since_ms = millis();
+}
+
+void wifiStatusLogTick() {
+  if (!s_wifi_log_attached) {
+    WiFi.onEvent(onWifiStatusEvent);
+    s_wifi_log_attached = true;
+  }
+
+  const wl_status_t status = WiFi.status();
+  const uint32_t ip = wifiIpWord();
+  if (s_wifi_log_seen && status == s_wifi_log_status && ip == s_wifi_log_ip) {
+    return;
+  }
+  logWifiStatusChange(status, ip);
+}
+
 void wifiLoop() {
+  wifiStatusLogTick();
   ensureWifiManager();
   if (wifiLinkUp()) {
     if (!s_wm.getWebPortalActive() && !s_wm.getConfigPortalActive()) {

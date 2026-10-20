@@ -256,10 +256,9 @@ void loop() {
   services::mqtt::loop();
 
   if (WiFi.status() != WL_CONNECTED) {
-    if (g_radar_visible) {
-      Serial.println("WiFi lost — will reconnect");
-      g_radar_visible = false;
-    }
+    // The transition itself is logged by wifiStatusLogTick() (wifi_setup.cpp),
+    // with the driver's disconnect reason -- no second line here.
+    g_radar_visible = false;
 
     if (g_wifi_down_since == 0) {
       g_wifi_down_since = millis();

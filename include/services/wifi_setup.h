@@ -9,6 +9,11 @@ bool wifiSetupConnect();
 bool wifiReconnect();
 /** Keeps the LAN config portal alive; call every loop() iteration. */
 void wifiLoop();
+/**
+ * Print the Wi-Fi state, one line per CHANGE (never per loop). Attaches the
+ * driver's disconnect-reason handler on first call. Call every loop().
+ */
+void wifiStatusLogTick();
 bool wifiBootButtonPressed();
 /** GPIO + interrupt setup; call once early in setup(). */
 void bootButtonInit();

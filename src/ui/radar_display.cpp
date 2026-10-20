@@ -91,7 +91,6 @@ int s_follow_panel_bottom = 0;
 char s_follow_panel_lines[4][24] = {};
 int s_follow_panel_line_count = 0;
 bool s_follow_panel_laid_out = false;
-unsigned long s_follow_perf_log_ms = 0;
 
 class DrawScope {
  public:
@@ -1311,17 +1310,10 @@ void renderFrame() {
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
 
-  if (radar::debugOverlay()) {
-    const unsigned long now_ms = millis();
-    if (now_ms - s_follow_perf_log_ms >= 1000UL) {
-      s_follow_perf_log_ms = now_ms;
-      Serial.printf("perf: follow overlay %u us, trail %u us (%s), %u pts\n",
-                    static_cast<unsigned>(s_follow_overlay_us),
-                    static_cast<unsigned>(s_follow_trail_us),
-                    s_follow_trail_us > kFollowTrailBudgetUs ? "over budget" : "ok",
-                    static_cast<unsigned>(services::follow::trail().size()));
-    }
-  }
+  // The per-second perf line that used to live here is retired: measured on the bench it read
+  // overlay 4.1-5.0 ms with a trail of only 216-515 us at 5-6 points, so the gate below is
+  // answered (no precompute) and the fixed cost is the panel, not the trail. The two readings
+  // and the budget stay: re-print them if the trail/stroke design changes.
 }
 
 }  // namespace

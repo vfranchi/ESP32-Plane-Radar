@@ -727,6 +727,9 @@ void drawAircraft() {
   }
 
   sortDrawItemsFarFirst(items, draw_count);
+  // Symbol and tag in ONE pass, far to near: with tags drawn in a second pass they
+  // always landed on top of a nearer aircraft's symbol while their own symbol stayed
+  // underneath. Interleaving keeps the pair together, so a nearer tag also wins.
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
     const int x = items[d].x;
@@ -736,10 +739,7 @@ void drawAircraft() {
                     planes[i].gs_knots, radar::kColorTrackVector, icon.half);
     drawAircraftIcon(x, y, planes[i].nose_deg, icon,
                      iconPaletteForAltFt(planes[i].alt_ft));
-  }
-  for (size_t d = 0; d < draw_count; ++d) {
-    const size_t i = items[d].index;
-    drawAircraftTag(items[d].x, items[d].y, planes[i]);
+    drawAircraftTag(x, y, planes[i]);
   }
 }
 

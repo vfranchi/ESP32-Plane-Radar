@@ -779,8 +779,15 @@ namespace services::fa {
 namespace {
 
 constexpr char kFaApiBase[] = "https://aeroapi.flightaware.com/aeroapi/flights/";
-/** Largest free block needed before a second (transient) TLS handshake is attempted. */
-constexpr size_t kFaHandshakeMinBlock = 40 * 1024;
+/**
+ * Largest free block needed before a second (transient) TLS handshake is attempted.
+ *
+ * 36 KB, not the 40 KB this used to demand: with the 57.6 KB frame sprite alive the block
+ * idles at 40 948 B and that missed the old floor by twelve bytes, so the route was skipped
+ * forever. The handshake itself needs the two 16 KB mbedTLS record buffers; 36 KB is the
+ * measured floor that still fits them, and the post-handshake log proves the cost.
+ */
+constexpr size_t kFaHandshakeMinBlock = 36 * 1024;
 /** The API answers with ~14 days of legs; more than this cannot change the pick. */
 constexpr size_t kFaMaxCandidates = 8;
 
@@ -834,18 +841,17 @@ bool lookupRoute(const char* ident, bool is_registration, RouteResult* out) {
   out->attempted = true;
 
   // AeroAPI is not the feed's host, so this pays its own TLS handshake -- and two live
-  // TLS contexts do not fit next to the 57.6 KB frame sprite. If the block is too small,
-  // drop the feed's keep-alive first: one lost reconnect is invisible, an
-  // allocation-failure storm is not.
-  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kFaHandshakeMinBlock) {
+  // TLS contexts do not fit next to the 57.6 KB frame sprite. Drop the feed's keep-alive
+  // first, always: the next feed poll re-handshakes (measured ~1 s of CPU, invisible at a
+  // 5 s cadence), and leaving it alive cost this lookup a read timeout on the bench.
+  {
     const size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     services::adsb::releaseKeepAlive();
     delay(50);  // let the socket teardown return its record buffers
     const size_t after = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial.printf("fa: block %u < %u, released the keep-alive, now %u\n",
-                  static_cast<unsigned>(before),
-                  static_cast<unsigned>(kFaHandshakeMinBlock),
-                  static_cast<unsigned>(after));
+    Serial.printf("fa: released the keep-alive, block %u -> %u (floor %u)\n",
+                  static_cast<unsigned>(before), static_cast<unsigned>(after),
+                  static_cast<unsigned>(kFaHandshakeMinBlock));
     // Flagged before any return: the caller has to tell "the heap said not now" from
     // "the API answered", because only the second one deserves the long backoff.
     out->low_block = true;

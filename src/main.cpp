@@ -236,9 +236,15 @@ void adsbFetchTask(void*) {
           const char* ident = tgt.id;
           bool is_registration = false;
           if (tgt.is_hex) {
+            // AeroAPI takes a callsign, a registration or a fa_flight_id -- never an ICAO
+            // hex. The callsign is the better handle and the OpenSky fallback supplies it
+            // for exactly the flights the feed can no longer name.
             services::adsb::Aircraft hex_target{};
             if (services::adsb::targetSnapshot(&hex_target) &&
-                hex_target.registration[0] != '\0') {
+                hex_target.callsign[0] != '\0') {
+              ident = hex_target.callsign;
+            } else if (services::adsb::targetSnapshot(&hex_target) &&
+                       hex_target.registration[0] != '\0') {
               ident = hex_target.registration;
               is_registration = true;
             } else {

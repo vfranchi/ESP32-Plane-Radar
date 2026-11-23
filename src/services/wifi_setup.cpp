@@ -15,6 +15,7 @@
 #endif
 
 #include "config.h"
+#include "services/fa_client.h"
 #include "services/flight_follow.h"
 #include "services/mqtt_config.h"
 #include "services/mqtt_client.h"
@@ -104,6 +105,13 @@ WiFiManagerParameter s_param_follow("follow_id",
                                     kFollowParamLen,
                                     " type=\"text\" placeholder=\"e.g. GLO1724\"");
 
+// FlightAware AeroAPI key. Masked like the broker password, starts EMPTY, and an empty
+// value simply disables the route lookup -- the radar works without it. It is stored in
+// NVS next to the other settings, so the long-press wipe clears it too.
+WiFiManagerParameter s_param_fa_key("fa_key", "<br/>FlightAware AeroAPI key", "",
+                                    services::fa::kKeyLen - 1,
+                                    " type=\"password\" placeholder=\"AeroAPI key\"");
+
 // MQTT / Home Assistant. Every text field starts EMPTY on purpose: the firmware
 // ships no broker address, and an empty host keeps MQTT inert. The hints are
 // placeholders only, never pre-filled values.
@@ -143,6 +151,7 @@ void refreshPortalParamValues() {
            "type=\"checkbox\"%s", ui::radar::debugOverlay() ? " checked" : "");
   s_param_debug.setValue("T", 2);
   s_param_follow.setValue(services::follow::target().id, kFollowParamLen);
+  s_param_fa_key.setValue(services::fa::apiKey(), services::fa::kKeyLen - 1);
 
   services::mqtt::MqttConfig mqtt{};
   services::mqtt::loadConfig(mqtt);
@@ -175,6 +184,7 @@ void onPortalParamsSaved() {
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveDebugOverlayFromPortal(s_param_debug.getValue());
   services::follow::setTargetFromPortal(s_param_follow.getValue());
+  services::fa::saveKeyFromPortal(s_param_fa_key.getValue());
   services::mqtt::saveFromPortal(
       s_param_mqtt_host.getValue(), s_param_mqtt_port.getValue(),
       s_param_mqtt_user.getValue(), s_param_mqtt_pass.getValue(),
@@ -193,6 +203,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_runways);
   wm.addParameter(&s_param_debug);
   wm.addParameter(&s_param_follow);
+  wm.addParameter(&s_param_fa_key);
   wm.addParameter(&s_param_mqtt_on);
   wm.addParameter(&s_param_mqtt_host);
   wm.addParameter(&s_param_mqtt_port);
@@ -280,7 +291,10 @@ void resetWifiCredentials() {
   ui::radar::unitsReset();
   services::follow::reset();
   services::mqtt::clearConfig();
-  Serial.println("WiFi credentials, location, units, follow target and MQTT config cleared");
+  services::fa::saveKeyFromPortal("");
+  Serial.println(
+      "WiFi credentials, location, units, follow target, MQTT config and FlightAware key "
+      "cleared");
 }
 
 void onConfigPortalApStarted(WiFiManager*) {

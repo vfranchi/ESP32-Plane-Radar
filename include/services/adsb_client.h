@@ -29,6 +29,12 @@ struct Aircraft {
   uint32_t pos_age_ms;
   char callsign[9];
   char type[5];
+  /**
+   * Tail number as the feed reports it ("r"). Empty for military or otherwise
+   * unregistered airframes. This is the only handle a Mode-S hex target gives the
+   * FlightAware lookup: AeroAPI takes a registration, not an ICAO hex address.
+   */
+  char registration[9];
   char alt[12];
   /**
    * Barometric (or geometric) altitude in ft, or ui::altitude::kUnknownAltFt
@@ -110,6 +116,13 @@ bool targetValid();
 
 /** Copy of the followed aircraft, taken under the same lock as the area list. */
 bool targetSnapshot(Aircraft* out);
+
+/**
+ * Close the keep-alive session to the feed; the next area fetch re-handshakes.
+ * Last resort before a second TLS handshake: releasing this returns the ~50 KB of
+ * mbedTLS record buffers that a lookup on another host needs.
+ */
+void releaseKeepAlive();
 
 /**
  * True while a fetch is in flight. Set on entry to fetchUpdate() and cleared on

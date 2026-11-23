@@ -16,6 +16,8 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/fa_client.h"
+#include "services/fa_route.h"
 #include "services/http_body_framing.h"
 #include "ui/altitude_color.h"
 
@@ -367,6 +369,9 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   }
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
+  // The tail number: the FlightAware route lookup needs it for a hex target, because
+  // AeroAPI takes a registration and not an ICAO address.
+  copyJsonStringTrimmed(plane, "r", ac->registration, sizeof(ac->registration));
   formatAltitudeTag(plane, ac->alt, sizeof(ac->alt), &ac->on_ground, &ac->alt_ft);
   ac->is_private = isPrivateAircraft(plane, ac->callsign);
   ac->is_helicopter = isHelicopterAircraft(plane);
@@ -456,7 +461,10 @@ size_t snapshotAircraft(Aircraft* out, size_t max_out,
  */
 bool getJsonDocument(WiFiClientSecure& client, HTTPClient& http, const String& url,
                      const char* tag, JsonDocument& doc, const JsonDocument& filter,
-                     bool keep_alive, bool* out_socket_reused) {
+                     bool keep_alive, bool* out_socket_reused,
+                     const char* header_name = nullptr,
+                     const char* header_value = nullptr,
+                     int* out_http_code = nullptr) {
   client.setInsecure();
   if (out_socket_reused != nullptr) {
     *out_socket_reused = client.connected();
@@ -469,14 +477,21 @@ bool getJsonDocument(WiFiClientSecure& client, HTTPClient& http, const String& u
   // Only with this does HTTPClient::disconnect() keep the socket open instead of
   // calling _client->stop() -- end() consult its _reuse flag, the destructor does not.
   http.setReuse(keep_alive);
+  if (header_name != nullptr && header_value != nullptr) {
+    http.addHeader(header_name, header_value);
+  }
 
-  // HTTPClient only records Transfer-Encoding in the collected headers when it is asked
-  // for up front; _transferEncoding itself is private.
-  static const char* kWantedHeaders[] = {"Transfer-Encoding"};
-  http.collectHeaders(kWantedHeaders, 1);
+  // HTTPClient only records a header in the collected set when it is asked for up front;
+  // _transferEncoding itself is private. Date is collected because it is the only wall
+  // clock a route lookup gets on this board.
+  static const char* kWantedHeaders[] = {"Transfer-Encoding", "Date"};
+  http.collectHeaders(kWantedHeaders, 2);
   http.setTimeout(kRequestTimeoutMs);
 
   const int code = performGetWithPoll(http);
+  if (out_http_code != nullptr) {
+    *out_http_code = code;
+  }
   if (code != HTTP_CODE_OK) {
     if (fetchShouldStop()) {
       Serial.printf("%s: fetch abandoned (abort or link lost)\n", tag);
@@ -542,7 +557,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
         "tas", "ias", "alt_baro", "alt_geom", "seen_pos", "flight", "hex", "t",
-        "category"}) {
+        "r", "category"}) {
     f[key] = true;
   }
 
@@ -633,7 +648,7 @@ bool fetchTarget(const char* id, bool is_hex) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs", "tas",
         "ias", "alt_baro", "alt_geom", "seen_pos", "flight", "hex", "t",
-        "category"}) {
+        "r", "category"}) {
     f[key] = true;
   }
 
@@ -683,4 +698,193 @@ bool fetchTarget(const char* id, bool is_hex) {
   return true;
 }
 
+void releaseKeepAlive() {
+  s_http.end();
+  s_client.stop();
+}
+
 }  // namespace services::adsb
+
+// --- FlightAware AeroAPI route lookup ---------------------------------------------
+//
+// Deliberately in this translation unit: everything a one-shot lookup on a foreign host
+// needs is already here -- the chunked-body framing, the abort/poll hooks that keep the
+// fetch task responsive, and the keep-alive session it must release to win the ~50 KB a
+// second TLS handshake takes. A second copy of that machinery is how the two copies
+// drift apart.
+namespace services::fa {
+namespace {
+
+constexpr char kFaApiBase[] = "https://aeroapi.flightaware.com/aeroapi/flights/";
+/** Largest free block needed before a second (transient) TLS handshake is attempted. */
+constexpr size_t kFaHandshakeMinBlock = 40 * 1024;
+/** The API answers with ~14 days of legs; more than this cannot change the pick. */
+constexpr size_t kFaMaxCandidates = 8;
+
+/**
+ * A wrong or revoked key is not worth eight more requests a day: disable the lookup for
+ * the rest of the session (a reboot or a new key clears it).
+ */
+bool s_key_rejected = false;
+
+/** Epoch seconds of an ISO8601 field, 0 when absent or unparsable. */
+long isoEpoch(const JsonObject& flight, const char* key) {
+  if (!flight[key].is<const char*>()) {
+    return 0;
+  }
+  return epochFromIso(flight[key].as<const char*>());
+}
+
+/** Copy an airport code, IATA first, ICAO second; empty when the API knows neither. */
+void copyAirportCode(const JsonObject& airport, char* out) {
+  out[0] = '\0';
+  const char* src = nullptr;
+  if (airport["code_iata"].is<const char*>()) {
+    src = airport["code_iata"].as<const char*>();
+  } else if (airport["code_icao"].is<const char*>()) {
+    src = airport["code_icao"].as<const char*>();
+  }
+  if (src == nullptr) {
+    return;
+  }
+  size_t w = 0;
+  for (const char* c = src; *c != '\0' && w + 1 < kCodeLen; ++c) {
+    out[w++] = (*c >= 'a' && *c <= 'z') ? static_cast<char>(*c - 'a' + 'A') : *c;
+  }
+  out[w] = '\0';
+}
+
+}  // namespace
+
+bool lookupRoute(const char* ident, bool is_registration, RouteResult* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  *out = RouteResult{};
+  if (ident == nullptr || ident[0] == '\0') {
+    return false;  // an empty ident can only produce an invalid request
+  }
+  // Not an attempt: the caller must not back off for a key that is not configured.
+  if (!keyPresent() || s_key_rejected) {
+    return false;
+  }
+  out->attempted = true;
+
+  // AeroAPI is not the feed's host, so this pays its own TLS handshake -- and two live
+  // TLS contexts do not fit next to the 57.6 KB frame sprite. If the block is too small,
+  // drop the feed's keep-alive first: one lost reconnect is invisible, an
+  // allocation-failure storm is not.
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kFaHandshakeMinBlock) {
+    const size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    services::adsb::releaseKeepAlive();
+    delay(50);  // let the socket teardown return its record buffers
+    const size_t after = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    Serial.printf("fa: block %u < %u, released the keep-alive, now %u\n",
+                  static_cast<unsigned>(before),
+                  static_cast<unsigned>(kFaHandshakeMinBlock),
+                  static_cast<unsigned>(after));
+    // Flagged before any return: the caller has to tell "the heap said not now" from
+    // "the API answered", because only the second one deserves the long backoff.
+    out->low_block = true;
+    if (after < kFaHandshakeMinBlock) {
+      Serial.println("fa: still no room for a handshake, route left unknown");
+      return false;
+    }
+  }
+
+  // ident_type matters: by default AeroAPI reads the ident as a registration when it can,
+  // so a callsign sent without it can resolve to nothing at all.
+  String url = kFaApiBase;
+  url += ident;
+  url += is_registration ? "?ident_type=registration&max_pages=1"
+                         : "?ident_type=designator&max_pages=1";
+
+  JsonDocument filter;
+  JsonObject leg = filter["flights"].add<JsonObject>();
+  for (const char* key :
+       {"scheduled_out", "estimated_out", "actual_out", "scheduled_off", "estimated_off",
+        "actual_off", "scheduled_on", "estimated_on", "actual_on", "scheduled_in",
+        "estimated_in", "actual_in", "cancelled", "diverted"}) {
+    leg[key] = true;
+  }
+  JsonObject origin_filter = leg["origin"].to<JsonObject>();
+  origin_filter["code_iata"] = true;
+  origin_filter["code_icao"] = true;
+  JsonObject dest_filter = leg["destination"].to<JsonObject>();
+  dest_filter["code_iata"] = true;
+  dest_filter["code_icao"] = true;
+
+  // Function-local session on purpose: its teardown below frees the two 16 KB mbedTLS
+  // record buffers before the next feed poll needs them.
+  WiFiClientSecure client;
+  HTTPClient http;
+  JsonDocument doc;
+  int http_code = 0;
+  const bool answered = services::adsb::getJsonDocument(
+      client, http, url, "fa", doc, filter, /*keep_alive=*/false,
+      /*out_socket_reused=*/nullptr, "x-apikey", apiKey(), &http_code);
+  // The clock is the point of the request: take it even when the body was unusable.
+  out->clock_epoch = epochFromHttpDate(http.header("Date").c_str());
+  http.end();
+  client.stop();
+
+  if (!answered) {
+    if (http_code == 401 || http_code == 403) {
+      s_key_rejected = true;
+      Serial.println("fa: key rejected (401/403) -- no more route lookups this session");
+    }
+    return false;
+  }
+  if (out->clock_epoch <= 0) {
+    Serial.println("fa: no usable Date header, route left unknown");
+    return false;
+  }
+
+  JsonArray flights = doc["flights"].as<JsonArray>();
+  if (flights.isNull()) {
+    Serial.println("fa: no flights in the response");
+    return false;
+  }
+  Candidate candidates[kFaMaxCandidates];
+  size_t count = 0;
+  for (JsonObject flight : flights) {
+    if (count >= kFaMaxCandidates) {
+      break;
+    }
+    Candidate& c = candidates[count++];
+    c.scheduled_out = isoEpoch(flight, "scheduled_out");
+    c.estimated_out = isoEpoch(flight, "estimated_out");
+    c.actual_out = isoEpoch(flight, "actual_out");
+    c.scheduled_off = isoEpoch(flight, "scheduled_off");
+    c.estimated_off = isoEpoch(flight, "estimated_off");
+    c.actual_off = isoEpoch(flight, "actual_off");
+    c.scheduled_on = isoEpoch(flight, "scheduled_on");
+    c.estimated_on = isoEpoch(flight, "estimated_on");
+    c.actual_on = isoEpoch(flight, "actual_on");
+    c.scheduled_in = isoEpoch(flight, "scheduled_in");
+    c.estimated_in = isoEpoch(flight, "estimated_in");
+    c.actual_in = isoEpoch(flight, "actual_in");
+    c.cancelled = flight["cancelled"].as<bool>();
+    c.diverted = flight["diverted"].as<bool>();
+  }
+
+  const int picked = pickFlight(candidates, count, out->clock_epoch);
+  if (picked < 0) {
+    Serial.printf("fa: %u legs, none covers now\n", static_cast<unsigned>(count));
+    return false;
+  }
+  JsonObject flight = flights[picked];
+  copyAirportCode(flight["origin"], out->origin);
+  copyAirportCode(flight["destination"], out->dest);
+  out->arrival_epoch = arrivalEpoch(candidates[picked]);
+  out->found = out->origin[0] != '\0' && out->dest[0] != '\0';
+
+  Serial.printf("fa: %s %s > %s, arrival %s, largest block %u\n", ident,
+                out->origin[0] != '\0' ? out->origin : "?",
+                out->dest[0] != '\0' ? out->dest : "?",
+                out->arrival_epoch != 0 ? "known" : "unknown",
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  return out->found;
+}
+
+}  // namespace services::fa

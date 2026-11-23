@@ -11,6 +11,7 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "services/adsb_client.h"
+#include "services/fa_client.h"
 #include "services/fetch_watchdog.h"
 #include "services/flight_follow.h"
 #include "services/mqtt_client.h"
@@ -178,6 +179,37 @@ void adsbFetchTask(void*) {
                                       services::location::centerLon(),
                                       ui::radar::fetchRadiusKm());
         }
+
+        if (services::follow::routeWanted()) {
+          // Once per flight, not once per poll: the leg is static, and this is the only
+          // request that needs a second TLS handshake. A Mode-S hex target has no
+          // callsign, so the tail number the feed reported is the only handle AeroAPI
+          // takes.
+          services::follow::noteRouteAttempt();
+          const char* ident = tgt.id;
+          bool is_registration = false;
+          if (tgt.is_hex) {
+            services::adsb::Aircraft hex_target{};
+            if (services::adsb::targetSnapshot(&hex_target) &&
+                hex_target.registration[0] != '\0') {
+              ident = hex_target.registration;
+              is_registration = true;
+            } else {
+              ident = "";  // nothing AeroAPI could resolve: skip without spending a call
+            }
+          }
+          services::fa::RouteResult route;
+          if (ident[0] != '\0' && services::fa::lookupRoute(ident, is_registration, &route)) {
+            services::follow::setRouteFromLookup(route.origin, route.dest,
+                                                 route.arrival_epoch, route.clock_epoch);
+          } else if (route.low_block) {
+            // The handshake did not fit: keep any route already known and retry shortly
+            // instead of blanking the panel for five minutes.
+            services::follow::noteRouteDeferred();
+          } else if (route.attempted) {
+            services::follow::noteRouteFailure();
+          }
+        }
       } else {
         // The MQTT client stays connected across the fetch: halving the frame
         // sprite (RGB332, 57.6 KB) leaves a ~40 KB largest block, which is what
@@ -246,6 +278,7 @@ void setup() {
   ui::radar::rangeInit();
   services::adsb::init();
   services::follow::init();
+  services::fa::loadKey();
   services::mqtt::init();
 
   if (wifiSetupConnect()) {

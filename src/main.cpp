@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include <cstring>
 
@@ -21,6 +22,23 @@
 
 namespace {
 
+// --- Timing instrumentation ------------------------------------------------
+// Two lines, deliberately different shapes:
+//   loop:   once a second, avg/max over the iterations -- a per-iteration print
+//           at ~100 Hz would flood the port and dwarf what is being measured.
+//   redraw: every 4 Hz refresh, because that number has to stay under the frame
+//           budget. The delay(10) at the end of loop() is excluded from both:
+//           idle time is not work.
+unsigned long g_loop_sum_us = 0;
+unsigned long g_loop_max_us = 0;
+unsigned long g_loop_iters = 0;
+unsigned long g_loop_log_ms = 0;
+// Redraw time is recorded and printed AFTER the loop sample is closed: the
+// Serial.write itself costs a few ms at 115200, and printing inside the window
+// would charge it to the loop (and to the redraw, if it ran before the read).
+unsigned long g_redraw_us = 0;
+bool g_redraw_full = false;
+
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
@@ -33,7 +51,10 @@ void showRadarIfConnected() {
     g_radar_visible = false;
     return;
   }
+  const unsigned long started_us = micros();
   ui::radarDisplayDraw();
+  g_redraw_us = micros() - started_us;
+  g_redraw_full = true;
   g_radar_visible = true;
 }
 
@@ -240,6 +261,7 @@ void setup() {
 }
 
 void loop() {
+  const unsigned long iter_start_us = micros();
   handleBootButton();
 
   if (Serial.available() > 0) {
@@ -256,10 +278,9 @@ void loop() {
   services::mqtt::loop();
 
   if (WiFi.status() != WL_CONNECTED) {
-    if (g_radar_visible) {
-      Serial.println("WiFi lost — will reconnect");
-      g_radar_visible = false;
-    }
+    // The transition itself is logged by wifiStatusLogTick() (wifi_setup.cpp),
+    // with the driver's disconnect reason -- no second line here.
+    g_radar_visible = false;
 
     if (g_wifi_down_since == 0) {
       g_wifi_down_since = millis();
@@ -282,8 +303,49 @@ void loop() {
       // Redraw at 4 Hz with dead-reckoned positions; the ADS-B fetch runs on
       // its own task (adsbFetchTask).
       g_last_redraw_ms = millis();
+      const unsigned long started_us = micros();
       ui::radarDisplayRefreshAircraft();
+      g_redraw_us = micros() - started_us;
+      g_redraw_full = false;
     }
+  }
+
+  // Closed before the idle delay: "loop time" here means work, not waiting.
+  const unsigned long iter_us = micros() - iter_start_us;
+  g_loop_sum_us += iter_us;
+  if (iter_us > g_loop_max_us) {
+    g_loop_max_us = iter_us;
+  }
+  ++g_loop_iters;
+
+  // Printed outside every measured window, so neither number pays for its own log.
+  if (g_redraw_us != 0) {
+#ifdef DEBUG
+    if (g_redraw_full) {
+      Serial.printf("redraw: %lu us (full)\n", g_redraw_us);
+    } else {
+      Serial.printf("redraw: %lu us\n", g_redraw_us);
+    }
+#endif
+    g_redraw_us = 0;
+  }
+
+  if (millis() - g_loop_log_ms >= 1000UL) {
+    g_loop_log_ms = millis();
+#ifdef DEBUG
+    Serial.printf("loop: avg %lu us, max %lu us, %lu iters\n",
+                  g_loop_sum_us / g_loop_iters, g_loop_max_us, g_loop_iters);
+    // Largest free block, not just the free total: the TLS handshake needs one
+    // big contiguous chunk, so a healthy free heap with a small block still fails.
+    Serial.printf("heap %lu free of %lu, largest block %lu\n",
+                  static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned long>(ESP.getHeapSize()),
+                  static_cast<unsigned long>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+#endif
+    g_loop_sum_us = 0;
+    g_loop_max_us = 0;
+    g_loop_iters = 0;
   }
 
   delay(10);

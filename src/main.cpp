@@ -168,6 +168,10 @@ void adsbFetchTask(void*) {
         services::adsb::Aircraft target{};
         bool found = services::adsb::targetSnapshot(&target);
         const bool primary = found && !services::adsb::targetFromFallback();
+        if (found && tgt.is_hex && target.callsign[0] != '\0') {
+          // A hex target: the panel should still name the flight when the name is known.
+          services::follow::setDisplayId(target.callsign);
+        }
         if (primary && target.hex_valid) {
           // Learn the ICAO address while the feed still has the flight: OpenSky has no
           // callsign search, so this hex is what makes the fallback possible later.

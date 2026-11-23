@@ -750,6 +750,9 @@ void setTargetFromFallback(const Aircraft& fix) {
   s_target.pos_age_ms = fix.pos_age_ms;
   memcpy(s_target.alt, fix.alt, sizeof(s_target.alt));
   s_target.alt_ft = fix.alt_ft;
+  if (s_target.callsign[0] == '\0' && fix.callsign[0] != '\0') {
+    strncpy(s_target.callsign, fix.callsign, sizeof(s_target.callsign) - 1);
+  }
   s_target_valid = true;
   s_target_from_fallback = true;
   s_target_update_ms = millis();
@@ -1074,6 +1077,15 @@ bool lookupFix(const char* hex, Fix* out) {
   if (!row[6].is<float>() || !row[5].is<float>()) {
     Serial.printf("osky: %s has no position\n", hex);
     return false;
+  }
+  // The callsign is the one thing that makes a hex target readable on the panel.
+  if (row[1].is<const char*>()) {
+    const char* cs = row[1].as<const char*>();
+    size_t w = 0;
+    for (const char* p = cs; *p != '\0' && *p != ' ' && w + 1 < sizeof(out->callsign); ++p) {
+      out->callsign[w++] = *p;
+    }
+    out->callsign[w] = '\0';
   }
   const long response_time = doc["time"] | 0L;
   const long time_position = row[3].is<long>() ? row[3].as<long>() : 0L;

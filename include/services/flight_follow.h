@@ -382,6 +382,13 @@ void noteTargetHex(const char* hex);
 /** Stored hex, "" when unknown. Lowercased. */
 const char* targetHex();
 
+/**
+ * What the panel calls the flight. A hex target is the only handle the user can type, but
+ * "ITY673" is what names the flight on screen -- set it whenever the aircraft's callsign
+ * becomes known (from the feed or from the fallback).
+ */
+void setDisplayId(const char* id);
+
 /** True while the fix on screen came from the OpenSky fallback rather than the feed. */
 void setFixFromFallback(bool from_fallback);
 bool fixFromFallback();

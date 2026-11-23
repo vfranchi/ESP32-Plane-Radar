@@ -223,6 +223,21 @@ void noteTargetHex(const char* hex) {
 
 const char* targetHex() { return s_target_hex; }
 
+void setDisplayId(const char* id) {
+  char normalised[kIdLen] = {};
+  normalizeId(id, normalised, sizeof(normalised));
+  // A hex target's own id is the address: never replace it with itself, and never blank it.
+  if (normalised[0] == '\0' || strcmp(normalised, s_info.id) == 0 ||
+      strcmp(normalised, s_target_hex) == 0) {
+    return;
+  }
+  if (strcmp(normalised, s_target.id) == 0) {
+    return;
+  }
+  strncpy(s_info.id, normalised, sizeof(s_info.id) - 1);
+  Serial.printf("follow: display id %s\n", s_info.id);
+}
+
 void setFixFromFallback(bool from_fallback) {
   if (from_fallback == s_fix_from_fallback) {
     return;

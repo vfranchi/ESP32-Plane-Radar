@@ -61,6 +61,14 @@ HTTPClient s_http;
 Aircraft s_target{};
 bool s_target_valid = false;
 unsigned long s_target_update_ms = 0;
+/** The fix above came from the OpenSky fallback, not from the feed. */
+bool s_target_from_fallback = false;
+/**
+ * How long a fallback fix stays authoritative while the feed keeps missing the flight.
+ * The fallback asks at most every 300 s (CreditBudget::max_s), so a hold shorter than that
+ * would blank the panel between two perfectly good answers.
+ */
+constexpr unsigned long kFallbackHoldMs = 360000UL;
 
 /** Marks the fetch in flight and guarantees the clear on any early return. */
 struct FetchInProgressGuard {
@@ -617,6 +625,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
 unsigned long targetUpdateMs() { return s_target_update_ms; }
 
+bool targetFromFallback() { return s_target_from_fallback; }
+
 bool targetValid() {
   bool valid = false;
   if (s_mutex != nullptr) {
@@ -699,9 +709,15 @@ bool fetchTarget(const char* id, bool is_hex) {
   if (s_mutex != nullptr) {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
   }
-  s_target_valid = have;
+  // A miss is not "no aircraft" when the fallback just supplied one: hold it while it is
+  // fresh, so the panel keeps dead-reckoning instead of flipping to LANDED between two
+  // fallback requests.
+  const bool hold_fallback =
+      !have && s_target_from_fallback && (millis() - s_target_update_ms) < kFallbackHoldMs;
+  s_target_valid = have || hold_fallback;
   if (have) {
     s_target = found;
+    s_target_from_fallback = false;
     // The followed aircraft's own base time: the area list has its own, because the two
     // are refreshed at different rates.
     s_target_update_ms = millis();
@@ -735,6 +751,7 @@ void setTargetFromFallback(const Aircraft& fix) {
   memcpy(s_target.alt, fix.alt, sizeof(s_target.alt));
   s_target.alt_ft = fix.alt_ft;
   s_target_valid = true;
+  s_target_from_fallback = true;
   s_target_update_ms = millis();
   if (s_mutex != nullptr) {
     xSemaphoreGive(s_mutex);

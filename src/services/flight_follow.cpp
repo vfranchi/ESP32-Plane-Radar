@@ -14,6 +14,8 @@ namespace {
 constexpr char kPrefsNamespace[] = "planeradar";
 constexpr char kPrefsFollowKey[] = "follow";
 constexpr char kPrefsFollowHexKey[] = "follow_hex";
+/** The callsign the stored hex was learned for: a callsign change must not inherit it. */
+constexpr char kPrefsFollowHexOwnerKey[] = "follow_hex_id";
 
 Target s_target;
 Session s_session;
@@ -37,13 +39,28 @@ void setTargetHex(const char* hex) {
   s_target_hex[w] = '\0';
 }
 
-/** The hex persisted for the current callsign target, if any. */
+/**
+ * The hex persisted for the current callsign target, if any.
+ *
+ * Two things make a stored hex unusable and both are checked here: a short one (a truncated
+ * write from an earlier build pointed the fallback at an address that does not exist), and
+ * one learned for a different callsign (a callsign change must not inherit the previous
+ * flight's address -- that would query the wrong aircraft).
+ */
 void loadStoredTargetHex() {
   char buf[sizeof(s_target_hex)] = {};
+  char owner[kIdLen] = {};
   Preferences prefs;
   if (prefs.begin(kPrefsNamespace, true)) {
     prefs.getString(kPrefsFollowHexKey, buf, sizeof(buf));
+    prefs.getString(kPrefsFollowHexOwnerKey, owner, sizeof(owner));
     prefs.end();
+  }
+  if (strlen(buf) != 6 || strcmp(owner, s_target.id) != 0) {
+    if (buf[0] != '\0') {
+      Serial.printf("follow: stored hex %s ignored (owner '%s')\n", buf, owner);
+    }
+    return;
   }
   setTargetHex(buf);
 }
@@ -183,21 +200,25 @@ const RouteCache& routeCache() { return s_route; }
 void noteTargetHex(const char* hex) {
   char normalised[sizeof(s_target_hex)] = {};
   size_t w = 0;
-  for (const char* p = hex != nullptr ? hex : ""; *p != '\0' && w + 2 < sizeof(normalised);
+  for (const char* p = hex != nullptr ? hex : ""; *p != '\0' && w + 1 < sizeof(normalised);
        ++p) {
     normalised[w++] = (*p >= 'A' && *p <= 'F') ? static_cast<char>(*p - 'A' + 'a') : *p;
   }
   normalised[w] = '\0';
-  if (normalised[0] == '\0' || strcmp(normalised, s_target_hex) == 0) {
+  if (strlen(normalised) != 6 || !s_target.active || s_target.is_hex) {
+    return;  // only a callsign target needs teaching, and only with a full address
+  }
+  if (strcmp(normalised, s_target_hex) == 0) {
     return;  // nothing to do: never rewrite NVS on every poll
   }
   setTargetHex(normalised);
   Preferences prefs;
   if (prefs.begin(kPrefsNamespace, false)) {
     prefs.putString(kPrefsFollowHexKey, s_target_hex);
+    prefs.putString(kPrefsFollowHexOwnerKey, s_target.id);
     prefs.end();
   }
-  Serial.printf("follow: target hex %s\n", s_target_hex);
+  Serial.printf("follow: target hex %s for %s\n", s_target_hex, s_target.id);
 }
 
 const char* targetHex() { return s_target_hex; }

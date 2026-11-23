@@ -167,13 +167,14 @@ void adsbFetchTask(void*) {
 
         services::adsb::Aircraft target{};
         bool found = services::adsb::targetSnapshot(&target);
-        if (found && target.hex_valid) {
+        const bool primary = found && !services::adsb::targetFromFallback();
+        if (primary && target.hex_valid) {
           // Learn the ICAO address while the feed still has the flight: OpenSky has no
           // callsign search, so this hex is what makes the fallback possible later.
           services::follow::noteTargetHex(target.hex);
         }
 
-        if (!found && services::follow::targetHex()[0] != '\0' &&
+        if (!primary && services::follow::targetHex()[0] != '\0' &&
             services::open_sky::dueNow(millis())) {
           // adsb.fi is a network of ground receivers: a flight leaves it over water or in
           // a coverage hole while OpenSky still has it. One credit, one aircraft.
@@ -192,12 +193,16 @@ void adsbFetchTask(void*) {
             strncpy(fb.alt, fix.alt, sizeof(fb.alt));
             fb.alt_ft = 0;
             services::adsb::setTargetFromFallback(fb);
-            services::follow::setFixFromFallback(true);
             found = services::adsb::targetSnapshot(&target);
           } else {
             services::open_sky::nextAttemptMs(services::clock::nowEpoch(millis()));
           }
-        } else if (found) {
+        }
+        // The source flag follows what is actually being drawn: a fallback fix, or the
+        // hold-over of one, is not the feed.
+        if (services::adsb::targetFromFallback()) {
+          services::follow::setFixFromFallback(true);
+        } else if (primary) {
           services::follow::setFixFromFallback(false);
         }
         // Fast and off the apron: that is "live". Ground speed alone is not enough -- a

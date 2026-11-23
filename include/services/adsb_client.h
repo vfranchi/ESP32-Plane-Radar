@@ -133,6 +133,13 @@ bool targetSnapshot(Aircraft* out);
 void setTargetFromFallback(const Aircraft& fix);
 
 /**
+ * True while the followed aircraft's fix is the fallback's (or a hold-over of one). The
+ * panel uses it to say where the position came from; the fetch loop uses it to keep the
+ * dead-reckoning alive between two fallback requests, which are minutes apart by design.
+ */
+bool targetFromFallback();
+
+/**
  * Close the keep-alive session to the feed; the next area fetch re-handshakes.
  * Last resort before a second TLS handshake: releasing this returns the ~50 KB of
  * mbedTLS record buffers that a lookup on another host needs.

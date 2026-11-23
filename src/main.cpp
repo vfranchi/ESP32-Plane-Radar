@@ -195,6 +195,9 @@ void adsbFetchTask(void*) {
             fb.gs_knots = fix.gs_knots;
             fb.pos_age_ms = fix.pos_age_ms;
             strncpy(fb.alt, fix.alt, sizeof(fb.alt));
+            // Identity the feed never gave us: the fallback row carries the callsign, and
+            // for a hex target that is the only way the panel can name the flight.
+            strncpy(fb.callsign, fix.callsign, sizeof(fb.callsign));
             fb.alt_ft = 0;
             services::adsb::setTargetFromFallback(fb);
             found = services::adsb::targetSnapshot(&target);

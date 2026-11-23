@@ -1103,8 +1103,9 @@ bool lookupFix(const char* hex, Fix* out) {
       static_cast<uint32_t>(positionAgeSeconds(response_time, time_position) * 1000.0f);
   out->found = true;
 
-  Serial.printf("osky: fallback %s ok, %.4f/%.4f %s %.0f kt, %ld credits left\n", hex,
-                out->lat, out->lon, out->alt, out->gs_knots, remaining);
+  Serial.printf("osky: fallback %s ok (%s), %.4f/%.4f %s %.0f kt, %ld credits left\n", hex,
+                out->callsign[0] != '\0' ? out->callsign : "-", out->lat, out->lon,
+                out->alt, out->gs_knots, remaining);
   return true;
 }
 

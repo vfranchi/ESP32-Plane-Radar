@@ -124,9 +124,25 @@ replaces the empty space below it.
 | `NOT LIVE` | Configured but not in the feed | `no position` plus the age of the last fix |
 | `LANDED` | Was airborne this session, now on the ground or gone | `block 1h05` |
 
-**Data sources.** Live positions come only from **adsb.fi** (`opendata.adsb.fi`), one request per
+**Data sources.** Live positions come from **adsb.fi** (`opendata.adsb.fi`), one request per
 second at most — the followed flight is looked up every poll, the surrounding traffic every third
 one.
+
+When adsb.fi loses the followed flight — it is a network of ground receivers, so a flight leaves
+it over water or in a coverage hole — the firmware asks **OpenSky Network** for that one aircraft
+(`/states/all?icao24=<hex>`, one credit, no bounding box) and keeps the radar drawing it. The
+panel says `osky` on the state line while the fix is not the feed's: OpenSky's resolution is 10 s
+anonymous, so the dot steps rather than glides. The callsign, type and registration stay the ones
+the feed taught, the trail joins across the switch, and dead reckoning bridges the gaps between
+two fallback requests.
+
+- **Credits** — the fallback costs 1 credit per call. The anonymous tier has **400/day**, so the
+  firmware spaces its asks from `X-Rate-Limit-Remaining` (≈50 s with a few hours to UTC midnight),
+  backs off on `429`, and holds the last fix for up to 6 minutes while the feed stays blind. An
+  OpenSky API client (4 000 credits/day) is supported by the budget but not required.
+- **Identity** — OpenSky has no callsign search, so the board remembers the followed aircraft's
+  ICAO address (learned from adsb.fi, persisted in NVS). A flight adsb.fi has never seen has no
+  address to ask for: type the Mode-S hex in the portal instead of the callsign.
 
 The route (`GRU > FCO`) and the ETA come from **FlightAware AeroAPI**, one request per followed
 flight: `GET /flights/{ident}` with `max_pages=1`. It is a *dated* source, unlike the static

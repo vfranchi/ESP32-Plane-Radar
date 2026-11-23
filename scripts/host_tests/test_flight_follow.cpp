@@ -16,6 +16,11 @@
 namespace {
 
 using services::follow::deriveState;
+using services::follow::kRouteDeferMs;
+using services::follow::kRouteLookupsPerDay;
+using services::follow::kRouteRetryMs;
+using services::follow::kRouteTtlMs;
+using services::follow::RouteCache;
 using services::follow::greatCircleKm;
 using services::follow::kIdLen;
 using services::follow::kTrailMax;
@@ -117,6 +122,65 @@ int main() {
   seen.reset();
   CHECK(!seen.ever_seen);
   CHECK(seen.minutesSinceSeen(999999) == 0.0f);
+
+  // --- route cache: one lookup per flight per day, with a spend ceiling ---
+  {
+    const unsigned long day = 20780;   // 2026-11-23
+    const unsigned long now = 100000;
+    RouteCache rc;
+    CHECK(rc.wantedAt(now, day));            // nothing known yet
+    rc.noteAttempt(now, day);
+    CHECK(!rc.wantedAt(now + 1000, day));    // just tried: inside the backoff
+    CHECK(rc.wantedAt(now + kRouteRetryMs, day));
+    CHECK(rc.lookups_today == 1);
+
+    rc.fail();
+    CHECK(!rc.usableAt(now, day));
+
+    // A deferral is not a failure: the next try comes in a minute, not five.
+    RouteCache deferred;
+    deferred.noteAttempt(now, day);
+    deferred.defer(now);
+    CHECK(!deferred.wantedAt(now + kRouteDeferMs - 1, day));
+    CHECK(deferred.wantedAt(now + kRouteDeferMs, day));
+    CHECK(kRouteDeferMs < kRouteRetryMs);
+
+    // Succeeding pins the route for 12 h and kills the backoff.
+    RouteCache cached;
+    cached.noteAttempt(now, day);
+    cached.succeed(now, day);
+    CHECK(cached.usableAt(now + 3600000, day));
+    CHECK(!cached.wantedAt(now + 3600000, day));
+    CHECK(!cached.usableAt(now + kRouteTtlMs, day));   // TTL expired
+    CHECK(cached.wantedAt(now + kRouteTtlMs, day));
+
+    // A new day invalidates it even inside the TTL: same callsign, another city pair.
+    CHECK(cached.usableAt(now + 3600000, day));
+    CHECK(!cached.usableAt(now + 3600000, day + 1));
+
+    // The spend ceiling holds when every lookup fails.
+    RouteCache spent;
+    for (unsigned i = 0; i < kRouteLookupsPerDay; ++i) {
+      spent.noteAttempt(now + i * kRouteRetryMs, day);
+      spent.fail();
+    }
+    CHECK(!spent.budgetLeft(day));
+    CHECK(!spent.wantedAt(now + 1000 * kRouteRetryMs, day));
+    CHECK(spent.budgetLeft(day + 1));                  // a new day brings a new budget
+    spent.noteAttempt(now + 1000 * kRouteRetryMs, day + 1);
+    CHECK(spent.lookups_today == 1);
+
+    // No clock yet (day 0): the budget still counts, it just cannot reset.
+    RouteCache blind;
+    CHECK(blind.wantedAt(now, 0));
+    blind.noteAttempt(now, 0);
+    CHECK(blind.budgetLeft(0));
+    for (unsigned i = 1; i < kRouteLookupsPerDay; ++i) {
+      blind.noteAttempt(now + i * kRouteRetryMs, 0);
+    }
+    CHECK(!blind.budgetLeft(0));
+    CHECK(blind.budgetLeft(day));                      // first clock resets it
+  }
 
   return testSummary("flight_follow");
 }

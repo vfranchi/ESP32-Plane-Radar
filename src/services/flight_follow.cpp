@@ -18,14 +18,20 @@ Target s_target;
 Session s_session;
 Info s_info;
 Trail s_trail;
+RouteCache s_route;
 
 /** Point the module at `id` (empty string = off) and drop the per-flight state. */
 void adoptTarget(const char* id) {
   s_session.reset();
   s_trail.clear();
+  s_route.reset();
 
+  // The wall clock belongs to the board, not to the flight: a new target must not have
+  // to wait for another response to learn what time it is.
+  const services::fa::Clock clock = s_info.clock;
   s_target = Target();
   s_info = Info();
+  s_info.clock = clock;
   if (id == nullptr || id[0] == '\0') {
     return;
   }
@@ -79,6 +85,75 @@ void setTargetFromPortal(const char* text) {
 }
 
 void reset() { setTargetFromPortal(""); }
+
+/** Uppercase copy of an airport code; an empty string stays "unknown". */
+void copyCode(const char* src, char* out) {
+  out[0] = '\0';
+  if (src == nullptr) {
+    return;
+  }
+  size_t w = 0;
+  for (const char* p = src; *p != '\0' && w + 1 < kCodeLen; ++p) {
+    out[w++] = (*p >= 'a' && *p <= 'z') ? static_cast<char>(*p - 'a' + 'A') : *p;
+  }
+  out[w] = '\0';
+}
+
+void setClock(long clock_epoch) {
+  if (clock_epoch > 0) {
+    s_info.clock.set(clock_epoch, millis());
+  }
+}
+
+void setRouteFromLookup(const char* origin, const char* dest, long arrival_epoch,
+                        long clock_epoch) {
+  setClock(clock_epoch);
+  copyCode(origin, s_info.origin);
+  copyCode(dest, s_info.destination);
+  s_info.route_known = s_info.origin[0] != '\0' && s_info.destination[0] != '\0';
+  s_info.arrival_epoch = arrival_epoch > 0 ? arrival_epoch : 0;
+
+  const unsigned long now = millis();
+  s_route.succeed(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+  Serial.printf("follow: route %s > %s, arrival %s\n",
+                s_info.origin[0] != '\0' ? s_info.origin : "?",
+                s_info.destination[0] != '\0' ? s_info.destination : "?",
+                s_info.arrival_epoch != 0 ? "known" : "unknown");
+}
+
+void clearRoute() {
+  s_info.origin[0] = '\0';
+  s_info.destination[0] = '\0';
+  s_info.route_known = false;
+  s_info.arrival_epoch = 0;
+  s_route.reset();
+}
+
+bool routeWanted() {
+  if (!s_target.active) {
+    return false;
+  }
+  const unsigned long now = millis();
+  return s_route.wantedAt(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+}
+
+void noteRouteAttempt() {
+  const unsigned long now = millis();
+  s_route.noteAttempt(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+}
+
+void noteRouteDeferred() { s_route.defer(millis()); }
+
+void noteRouteFailure() { s_route.fail(); }
+
+const RouteCache& routeCache() { return s_route; }
+
+float etaMinutesAt(unsigned long now_ms) {
+  if (!s_info.route_known || s_info.arrival_epoch <= 0) {
+    return -1.0f;
+  }
+  return services::fa::minutesUntil(s_info.arrival_epoch, s_info.clock.nowAt(now_ms));
+}
 
 const Target& target() { return s_target; }
 const Session& session() { return s_session; }

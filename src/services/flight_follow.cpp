@@ -99,6 +99,7 @@ void copyCode(const char* src, char* out) {
   out[w] = '\0';
 }
 
+/** Both callers below are inside this file: the clock and the route never land apart. */
 void setClock(long clock_epoch) {
   if (clock_epoch > 0) {
     s_info.clock.set(clock_epoch, millis());
@@ -119,14 +120,6 @@ void setRouteFromLookup(const char* origin, const char* dest, long arrival_epoch
                 s_info.origin[0] != '\0' ? s_info.origin : "?",
                 s_info.destination[0] != '\0' ? s_info.destination : "?",
                 s_info.arrival_epoch != 0 ? "known" : "unknown");
-}
-
-void clearRoute() {
-  s_info.origin[0] = '\0';
-  s_info.destination[0] = '\0';
-  s_info.route_known = false;
-  s_info.arrival_epoch = 0;
-  s_route.reset();
 }
 
 bool routeWanted() {

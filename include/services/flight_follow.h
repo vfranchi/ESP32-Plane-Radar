@@ -351,12 +351,6 @@ const Trail& trail();
 void setRouteFromLookup(const char* origin, const char* dest, long arrival_epoch,
                         long clock_epoch);
 
-/** Keep any known route but refresh the clock alone (a response with no usable leg). */
-void setClock(long clock_epoch);
-
-/** Drop the route (a new target, a new day). The clock stays valid. */
-void clearRoute();
-
 /** True when the cache says another lookup is due and the daily budget allows it. */
 bool routeWanted();
 

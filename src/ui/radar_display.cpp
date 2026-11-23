@@ -1045,7 +1045,11 @@ void layoutFollowPanel() {
       break;
   }
 
-  snprintf(lines[line_count++], sizeof(lines[0]), "%s %s", info.id, status);
+  // The fix may not be the feed's: over water adsb.fi has nothing and OpenSky answers
+  // behind the scenes. Say so on the state line -- the fallback's 10 s resolution makes
+  // the dot step, and a quiet substitution would read as the feed being that coarse.
+  snprintf(lines[line_count++], sizeof(lines[0]), "%s %s%s", info.id, status,
+           info.fix_from_fallback ? " osky" : "");
 
   // The route comes right after the identity: it is what names the flight, so it must
   // survive the four-line cap when speed and ETA compete for the last slot. An unknown

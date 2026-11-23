@@ -12,6 +12,8 @@
 #include "hardware/display.h"
 #include "services/adsb_client.h"
 #include "services/fa_client.h"
+#include "services/opensky_fallback.h"
+#include "services/wall_clock.h"
 #include "services/fetch_watchdog.h"
 #include "services/flight_follow.h"
 #include "services/mqtt_client.h"
@@ -164,7 +166,40 @@ void adsbFetchTask(void*) {
         services::adsb::fetchTarget(tgt.id, tgt.is_hex);
 
         services::adsb::Aircraft target{};
-        const bool found = services::adsb::targetSnapshot(&target);
+        bool found = services::adsb::targetSnapshot(&target);
+        if (found && target.hex_valid) {
+          // Learn the ICAO address while the feed still has the flight: OpenSky has no
+          // callsign search, so this hex is what makes the fallback possible later.
+          services::follow::noteTargetHex(target.hex);
+        }
+
+        if (!found && services::follow::targetHex()[0] != '\0' &&
+            services::open_sky::dueNow(millis())) {
+          // adsb.fi is a network of ground receivers: a flight leaves it over water or in
+          // a coverage hole while OpenSky still has it. One credit, one aircraft.
+          services::open_sky::noteAttempt(millis());
+          services::open_sky::Fix fix;
+          if (services::open_sky::lookupFix(services::follow::targetHex(), &fix)) {
+            services::adsb::Aircraft fb{};
+            fb.lat = fix.lat;
+            fb.lon = fix.lon;
+            fb.track_deg = fix.track_deg;
+            fb.track_valid = fix.track_valid;
+            fb.nose_deg = fix.track_deg;
+            fb.on_ground = fix.on_ground;
+            fb.gs_knots = fix.gs_knots;
+            fb.pos_age_ms = fix.pos_age_ms;
+            strncpy(fb.alt, fix.alt, sizeof(fb.alt));
+            fb.alt_ft = 0;
+            services::adsb::setTargetFromFallback(fb);
+            services::follow::setFixFromFallback(true);
+            found = services::adsb::targetSnapshot(&target);
+          } else {
+            services::open_sky::nextAttemptMs(services::clock::nowEpoch(millis()));
+          }
+        } else if (found) {
+          services::follow::setFixFromFallback(false);
+        }
         // Fast and off the apron: that is "live". Ground speed alone is not enough -- a
         // taxiing jet passes 40 kt, and a receiver that reports it at "0 ft" instead of
         // "ground" would otherwise make a landed airframe look airborne.

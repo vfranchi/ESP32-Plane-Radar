@@ -13,12 +13,40 @@ namespace {
 // ui::radar owns the same namespace and two open handles would conflict.
 constexpr char kPrefsNamespace[] = "planeradar";
 constexpr char kPrefsFollowKey[] = "follow";
+constexpr char kPrefsFollowHexKey[] = "follow_hex";
 
 Target s_target;
 Session s_session;
 Info s_info;
 Trail s_trail;
 RouteCache s_route;
+/** The followed aircraft's ICAO address, "" when never seen in the primary feed. */
+char s_target_hex[7] = {};
+bool s_fix_from_fallback = false;
+
+/** Store (lowercased) in RAM; empty clears. */
+void setTargetHex(const char* hex) {
+  s_target_hex[0] = '\0';
+  if (hex == nullptr) {
+    return;
+  }
+  size_t w = 0;
+  for (const char* p = hex; *p != '\0' && w + 1 < sizeof(s_target_hex); ++p) {
+    s_target_hex[w++] = (*p >= 'A' && *p <= 'F') ? static_cast<char>(*p - 'A' + 'a') : *p;
+  }
+  s_target_hex[w] = '\0';
+}
+
+/** The hex persisted for the current callsign target, if any. */
+void loadStoredTargetHex() {
+  char buf[sizeof(s_target_hex)] = {};
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    prefs.getString(kPrefsFollowHexKey, buf, sizeof(buf));
+    prefs.end();
+  }
+  setTargetHex(buf);
+}
 
 /** Point the module at `id` (empty string = off) and drop the per-flight state. */
 void adoptTarget(const char* id) {
@@ -32,6 +60,8 @@ void adoptTarget(const char* id) {
   s_target = Target();
   s_info = Info();
   s_info.clock = clock;
+  s_fix_from_fallback = false;
+  s_target_hex[0] = '\0';
   if (id == nullptr || id[0] == '\0') {
     return;
   }
@@ -40,6 +70,15 @@ void adoptTarget(const char* id) {
   strncpy(s_target.id, id, sizeof(s_target.id) - 1);
   strncpy(s_info.id, id, sizeof(s_info.id) - 1);
   s_info.state = State::kNotSeen;
+
+  if (s_target.is_hex) {
+    // A target typed as a hex IS the ICAO address: no need to wait for the feed.
+    setTargetHex(id);
+  } else {
+    // A callsign keeps the address learned in an earlier session: without it, a reboot in
+    // the middle of a coverage gap would leave the fallback with nothing to query.
+    loadStoredTargetHex();
+  }
 }
 
 }  // namespace
@@ -140,6 +179,39 @@ void noteRouteDeferred() { s_route.defer(millis()); }
 void noteRouteFailure() { s_route.fail(); }
 
 const RouteCache& routeCache() { return s_route; }
+
+void noteTargetHex(const char* hex) {
+  char normalised[sizeof(s_target_hex)] = {};
+  size_t w = 0;
+  for (const char* p = hex != nullptr ? hex : ""; *p != '\0' && w + 2 < sizeof(normalised);
+       ++p) {
+    normalised[w++] = (*p >= 'A' && *p <= 'F') ? static_cast<char>(*p - 'A' + 'a') : *p;
+  }
+  normalised[w] = '\0';
+  if (normalised[0] == '\0' || strcmp(normalised, s_target_hex) == 0) {
+    return;  // nothing to do: never rewrite NVS on every poll
+  }
+  setTargetHex(normalised);
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, false)) {
+    prefs.putString(kPrefsFollowHexKey, s_target_hex);
+    prefs.end();
+  }
+  Serial.printf("follow: target hex %s\n", s_target_hex);
+}
+
+const char* targetHex() { return s_target_hex; }
+
+void setFixFromFallback(bool from_fallback) {
+  if (from_fallback == s_fix_from_fallback) {
+    return;
+  }
+  s_fix_from_fallback = from_fallback;
+  s_info.fix_from_fallback = from_fallback;
+  Serial.printf("follow: fix source %s\n", from_fallback ? "OpenSky fallback" : "adsb.fi");
+}
+
+bool fixFromFallback() { return s_fix_from_fallback; }
 
 float etaMinutesAt(unsigned long now_ms) {
   if (!s_info.route_known || s_info.arrival_epoch <= 0) {

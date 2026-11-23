@@ -315,6 +315,11 @@ struct Info {
   float since_seen_min = 0.0f;
   /** Whether the feed is reporting it right now, so the panel can say when it is not. */
   bool found = false;
+  /**
+   * True while the fix being drawn came from the OpenSky fallback: 10 s resolution
+   * anonymous, and the panel says so instead of pretending it is the feed.
+   */
+  bool fix_from_fallback = false;
   /** Resolved airport codes (IATA when the API has it, else ICAO); empty = unknown. */
   char origin[kCodeLen] = {};
   char destination[kCodeLen] = {};
@@ -365,6 +370,21 @@ const RouteCache& routeCache();
 
 /** Panel ETA in minutes at `now_ms`, or -1 when there is nothing to count down to. */
 float etaMinutesAt(unsigned long now_ms);
+
+/**
+ * Remember the followed aircraft's ICAO address (lowercased), learned from the primary feed
+ * while the flight is still visible. OpenSky has no callsign search, so this hex is the only
+ * handle the fallback has -- and it is persisted, because a reboot in the middle of a
+ * coverage gap must not lose the identity of the flight being followed.
+ */
+void noteTargetHex(const char* hex);
+
+/** Stored hex, "" when unknown. Lowercased. */
+const char* targetHex();
+
+/** True while the fix on screen came from the OpenSky fallback rather than the feed. */
+void setFixFromFallback(bool from_fallback);
+bool fixFromFallback();
 
 /** Feed one target poll result: state, session, trail and info all follow from it. */
 void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,

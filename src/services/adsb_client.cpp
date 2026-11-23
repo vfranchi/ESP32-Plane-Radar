@@ -18,6 +18,9 @@
 #include "config.h"
 #include "services/fa_client.h"
 #include "services/fa_route.h"
+#include "services/opensky.h"
+#include "services/opensky_fallback.h"
+#include "services/wall_clock.h"
 #include "services/http_body_framing.h"
 #include "ui/altitude_color.h"
 
@@ -364,6 +367,15 @@ bool isHelicopterAircraft(const JsonObject& plane) {
 
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
+  copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
+  // Lowercase: OpenSky's icao24 is lowercase, the feed's hex may be either, and the
+  // fallback compares them as strings.
+  for (char* p = ac->hex; *p != '\0'; ++p) {
+    if (*p >= 'A' && *p <= 'F') {
+      *p = static_cast<char>(*p - 'A' + 'a');
+    }
+  }
+  ac->hex_valid = ac->hex[0] != '\0';
   if (ac->callsign[0] == '\0') {
     copyJsonStringTrimmed(plane, "hex", ac->callsign, sizeof(ac->callsign));
   }
@@ -484,8 +496,10 @@ bool getJsonDocument(WiFiClientSecure& client, HTTPClient& http, const String& u
   // HTTPClient only records a header in the collected set when it is asked for up front;
   // _transferEncoding itself is private. Date is collected because it is the only wall
   // clock a route lookup gets on this board.
-  static const char* kWantedHeaders[] = {"Transfer-Encoding", "Date"};
-  http.collectHeaders(kWantedHeaders, 2);
+  static const char* kWantedHeaders[] = {"Transfer-Encoding", "Date",
+                                         "X-Rate-Limit-Remaining",
+                                         "X-Rate-Limit-Retry-After-Seconds"};
+  http.collectHeaders(kWantedHeaders, 4);
   http.setTimeout(kRequestTimeoutMs);
 
   const int code = performGetWithPoll(http);
@@ -566,6 +580,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
                        &s_socket_reused)) {
     return false;
   }
+  // Every response carries Date: that is the board's only clock.
+  services::clock::setFromHttpDate(s_http.header("Date").c_str(), millis());
 
   // Parse into a local buffer, then publish atomically so a reader on another
   // thread never sees a half-updated list.
@@ -657,6 +673,7 @@ bool fetchTarget(const char* id, bool is_hex) {
                        /*keep_alive=*/true, nullptr)) {
     return false;  // the request itself failed; the caller keeps the previous state
   }
+  services::clock::setFromHttpDate(s_http.header("Date").c_str(), millis());
 
   Aircraft found{};
   bool have = false;
@@ -696,6 +713,32 @@ bool fetchTarget(const char* id, bool is_hex) {
   // "not in feed" is a state (the flight is not being tracked right now), not a failure.
   Serial.printf("adsb: target %s %s\n", id, have ? "found" : "not in feed");
   return true;
+}
+
+void setTargetFromFallback(const Aircraft& fix) {
+  if (s_mutex != nullptr) {
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+  }
+  if (!s_target_valid) {
+    // Never seen by the feed (a hex typed straight into the portal): there is no identity
+    // to inherit, so the address doubles as the callsign, as the feed path does.
+    s_target = Aircraft{};
+  }
+  s_target.lat = fix.lat;
+  s_target.lon = fix.lon;
+  s_target.nose_deg = fix.nose_deg;
+  s_target.track_deg = fix.track_deg;
+  s_target.track_valid = fix.track_valid;
+  s_target.on_ground = fix.on_ground;
+  s_target.gs_knots = fix.gs_knots;
+  s_target.pos_age_ms = fix.pos_age_ms;
+  memcpy(s_target.alt, fix.alt, sizeof(s_target.alt));
+  s_target.alt_ft = fix.alt_ft;
+  s_target_valid = true;
+  s_target_update_ms = millis();
+  if (s_mutex != nullptr) {
+    xSemaphoreGive(s_mutex);
+  }
 }
 
 void releaseKeepAlive() {
@@ -888,3 +931,152 @@ bool lookupRoute(const char* ident, bool is_registration, RouteResult* out) {
 }
 
 }  // namespace services::fa
+
+// --- OpenSky fallback for the followed flight -------------------------------------
+//
+// In this translation unit for the same reason the FlightAware lookup is: it reuses the
+// chunked-body framing, the abort/poll hooks and the keep-alive it must not disturb.
+// One credit per call, and only ever for the aircraft the user is following.
+namespace services::open_sky {
+namespace {
+
+constexpr char kOsApiBase[] = "https://opensky-network.org/api/states/all?icao24=";
+/** Backoff before the first response tells us the tier: assume the worst (anonymous). */
+constexpr unsigned long kUnknownBackoffMs = 60000UL;
+/** Nothing is worth asking faster than the feed itself. */
+constexpr unsigned long kMinBackoffMs = 5000UL;
+
+CreditBudget s_budget;
+unsigned long s_next_attempt_ms = 0;
+unsigned long s_backoff_ms = kUnknownBackoffMs;
+bool s_scheduled = false;
+
+/** "-N ft" or "GND", the shape the panel and the tag already expect. */
+void formatAlt(float meters, bool on_ground, char* out, size_t out_len) {
+  if (on_ground) {
+    strncpy(out, "GND", out_len - 1);
+    out[out_len - 1] = '\0';
+    return;
+  }
+  snprintf(out, out_len, "%d ft", static_cast<int>(metersToFeet(meters) + 0.5f));
+}
+
+/** Header value as a number, -1 when absent (anonymous tier may not send it). */
+long headerNumber(HTTPClient& http, const char* name) {
+  const String value = http.header(name);
+  if (value.length() == 0) {
+    return -1;
+  }
+  return value.toInt();
+}
+
+}  // namespace
+
+bool dueNow(unsigned long now_ms) {
+  if (!s_scheduled) {
+    return true;
+  }
+  return static_cast<long>(now_ms - s_next_attempt_ms) >= 0;
+}
+
+void noteAttempt(unsigned long now_ms) {
+  s_scheduled = true;
+  s_next_attempt_ms = now_ms + s_backoff_ms;
+}
+
+unsigned long nextAttemptMs(long now_epoch) {
+  const int interval_s = s_budget.intervalSeconds(now_epoch);
+  const unsigned long ms = static_cast<unsigned long>(interval_s) * 1000UL;
+  s_backoff_ms = ms < kMinBackoffMs ? kMinBackoffMs : ms;
+  return s_backoff_ms;
+}
+
+void resetBudget() {
+  s_budget = CreditBudget();
+  s_next_attempt_ms = 0;
+  s_backoff_ms = kUnknownBackoffMs;
+  s_scheduled = false;
+}
+
+bool lookupFix(const char* hex, Fix* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  *out = Fix{};
+  if (hex == nullptr || hex[0] == '\0') {
+    return false;  // a serial query with no address can only be invalid
+  }
+  out->attempted = true;
+
+  String url = kOsApiBase;
+  url += hex;
+  url += "&extended=1";
+
+  // The query answers with exactly one aircraft, so there is nothing to filter out beyond
+  // the envelope: a serial-only request is ~200 B.
+  JsonDocument filter;
+  filter["time"] = true;
+  filter["states"] = true;
+
+  // Function-local session on purpose: its teardown below returns the record buffers to
+  // the feed poll that comes next.
+  WiFiClientSecure client;
+  HTTPClient http;
+  JsonDocument doc;
+  int http_code = 0;
+  const bool answered = services::adsb::getJsonDocument(
+      client, http, url, "osky", doc, filter, /*keep_alive=*/false,
+      /*out_socket_reused=*/nullptr, /*header_name=*/nullptr, /*header_value=*/nullptr,
+      &http_code);
+  services::clock::setFromHttpDate(http.header("Date").c_str(), millis());
+
+  const long remaining = headerNumber(http, "X-Rate-Limit-Remaining");
+  if (remaining >= 0) {
+    s_budget.noteRemaining(remaining);
+    nextAttemptMs(services::clock::nowEpoch(millis()));
+  }
+  if (http_code == 429) {
+    const long retry_s = headerNumber(http, "X-Rate-Limit-Retry-After-Seconds");
+    out->rate_limited = true;
+    out->retry_after_s = retry_s > 0 ? static_cast<int>(retry_s) : 60;
+    s_backoff_ms = static_cast<unsigned long>(out->retry_after_s) * 1000UL;
+    Serial.printf("osky: rate limited, waiting %d s\n", out->retry_after_s);
+  }
+  http.end();
+  client.stop();
+
+  if (!answered) {
+    return false;
+  }
+  JsonArray states = doc["states"].as<JsonArray>();
+  if (states.isNull() || states.size() == 0) {
+    Serial.printf("osky: %s not in the network\n", hex);
+    return false;
+  }
+  JsonArray row = states[0];
+  if (!row[6].is<float>() || !row[5].is<float>()) {
+    Serial.printf("osky: %s has no position\n", hex);
+    return false;
+  }
+  const long response_time = doc["time"] | 0L;
+  const long time_position = row[3].is<long>() ? row[3].as<long>() : 0L;
+  out->lat = row[6].as<float>();
+  out->lon = row[5].as<float>();
+  out->on_ground = row[8].is<bool>() ? row[8].as<bool>() : false;
+  const float velocity = row[9].is<float>() ? row[9].as<float>() : 0.0f;
+  out->gs_knots = msToKnots(velocity);
+  out->track_valid = row[10].is<float>();
+  out->track_deg = out->track_valid ? row[10].as<float>() : 0.0f;
+  const float alt_m = row[7].is<float>() ? row[7].as<float>()
+                                         : (row[13].is<float>() ? row[13].as<float>() : 0.0f);
+  formatAlt(alt_m, out->on_ground, out->alt, sizeof(out->alt));
+  out->pos_age_ms =
+      static_cast<uint32_t>(positionAgeSeconds(response_time, time_position) * 1000.0f);
+  out->found = true;
+
+  Serial.printf("osky: fallback %s ok, %.4f/%.4f %s %.0f kt, %ld credits left\n", hex,
+                out->lat, out->lon, out->alt, out->gs_knots, remaining);
+  return true;
+}
+
+}  // namespace services::open_sky

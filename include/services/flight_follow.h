@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "services/fa_route.h"
+
 // Follow-a-flight mode: target identity, session state and trail.
 //
 // Free of Arduino, NVS and LovyanGFX so scripts/run_host_tests.sh can compile it
@@ -17,6 +19,30 @@ constexpr size_t kTrailMax = 64;  // ~5.3 min of trail at the 5 s poll
 constexpr float kAirborneGsKnots = 40.0f;
 /** Trail samples closer than this to the previous one are jitter, not motion. */
 constexpr float kTrailMinMoveKm = 0.1f;
+
+/** Display length of an airport code: IATA (3) or ICAO (4) + NUL. */
+constexpr size_t kCodeLen = services::fa::kCodeLen;
+/** Cached route lifetime. A callsign flies one leg a day, hence also the day check. */
+constexpr unsigned long kRouteTtlMs = 12UL * 60UL * 60UL * 1000UL;
+/** Minimum spacing between failed route lookups: never hammer a foreign API. */
+constexpr unsigned long kRouteRetryMs = 300000UL;
+/**
+ * Retry window after a lookup that never ran because the heap had no room for the TLS
+ * handshake. Buffers are recycled within a minute, unlike a real API failure -- but "a
+ * minute" was a flat 60 s and that is too coarse to catch the window: measured on the
+ * board the first boot attempt missed the floor by 12 bytes and the very next one, 60 s
+ * later, had 45 KB. The wait escalates 10 s -> 20 s -> 40 s and caps here, so a transient
+ * low block heals in one or two tries while a persistently starved heap still backs off.
+ */
+constexpr unsigned long kRouteDeferMs = 60000UL;
+/** First wait after a heap deferral; doubles per consecutive deferral up to kRouteDeferMs. */
+constexpr unsigned long kRouteDeferFirstMs = 10000UL;
+/**
+ * Hard daily budget. AeroAPI's Personal tier charges $0.005 per result set and gives $5
+ * of free usage a month, so 12 lookups a day is $0.06/day: inside the credit even when
+ * every single lookup fails and retries.
+ */
+constexpr unsigned kRouteLookupsPerDay = 12;
 
 enum class State {
   kIdle,      // no target configured
@@ -208,6 +234,89 @@ struct Trail {
   }
 };
 
+/**
+ * When a cached route is still good, and when another lookup is allowed.
+ *
+ * The day is part of the route's identity because the same callsign flies a different
+ * city pair on a different day, so a TTL alone would serve yesterday's airports. The
+ * daily budget bounds the spend when every lookup fails. A day of 0 means the clock has
+ * never been synced (no Date header seen yet): the budget then counts without resetting,
+ * which still lets the first successful response establish it.
+ */
+struct RouteCache {
+  bool valid = false;
+  unsigned long fetched_ms = 0;
+  unsigned long fetched_day = 0;
+  bool attempted = false;
+  unsigned long last_attempt_ms = 0;
+  unsigned long retry_ms = kRouteRetryMs;
+  /** Current step of the heap-deferral ladder; 0 while not deferring. */
+  unsigned long defer_ms = 0;
+  unsigned long budget_day = 0;
+  unsigned lookups_today = 0;
+
+  void reset() { *this = RouteCache(); }
+
+  bool usableAt(unsigned long now_ms, unsigned long day) const {
+    if (!valid) {
+      return false;
+    }
+    if (day != 0 && day != fetched_day) {
+      return false;  // a new day: the callsign may be flying somewhere else now
+    }
+    return (now_ms - fetched_ms) < kRouteTtlMs;
+  }
+
+  bool budgetLeft(unsigned long day) const {
+    return day != budget_day || lookups_today < kRouteLookupsPerDay;
+  }
+
+  bool wantedAt(unsigned long now_ms, unsigned long day) const {
+    if (usableAt(now_ms, day) || !budgetLeft(day)) {
+      return false;
+    }
+    if (attempted && (now_ms - last_attempt_ms) < retry_ms) {
+      return false;  // failed recently: back off
+    }
+    return true;
+  }
+
+  void noteAttempt(unsigned long now_ms, unsigned long day) {
+    if (day != budget_day) {
+      budget_day = day;
+      lookups_today = 0;
+    }
+    ++lookups_today;
+    attempted = true;
+    last_attempt_ms = now_ms;
+    retry_ms = kRouteRetryMs;
+  }
+
+  /**
+   * The lookup never ran (no room for the handshake). Unlike fail(), this keeps whatever
+   * route is already known -- an aged route still beats a blank panel -- and pushes the
+   * next try out by the short window, doubling it per consecutive deferral (10 s, 20 s,
+   * 40 s, then the kRouteDeferMs cap) so a transient low block is caught while it is open.
+   */
+  void defer(unsigned long now_ms) {
+    defer_ms = defer_ms == 0
+                   ? kRouteDeferFirstMs
+                   : (defer_ms >= kRouteDeferMs / 2 ? kRouteDeferMs : defer_ms * 2);
+    attempted = true;
+    last_attempt_ms = now_ms;
+    retry_ms = defer_ms;
+  }
+
+  void succeed(unsigned long now_ms, unsigned long day) {
+    valid = true;
+    fetched_ms = now_ms;
+    fetched_day = day;
+    defer_ms = 0;  // a resolved route starts the ladder over
+  }
+
+  void fail() { valid = false; }
+};
+
 // --- stateful API, implemented in src/services/flight_follow.cpp ---
 
 /** Everything the info panel needs, refreshed by onReport(). */
@@ -219,6 +328,22 @@ struct Info {
   float since_seen_min = 0.0f;
   /** Whether the feed is reporting it right now, so the panel can say when it is not. */
   bool found = false;
+  /**
+   * True while the fix being drawn came from the OpenSky fallback: 10 s resolution
+   * anonymous, and the panel says so instead of pretending it is the feed.
+   */
+  bool fix_from_fallback = false;
+  /** Resolved airport codes (IATA when the API has it, else ICAO); empty = unknown. */
+  char origin[kCodeLen] = {};
+  char destination[kCodeLen] = {};
+  bool route_known = false;
+  /** Scheduled/estimated arrival, epoch seconds; 0 = no countdown to show. */
+  long arrival_epoch = 0;
+  /**
+   * Wall clock from the last AeroAPI Date header. It lives here, not in the client, so
+   * the panel can count down between lookups and survives losing the feed.
+   */
+  services::fa::Clock clock;
 };
 
 /** Load the saved target from NVS. Call once, after services::location::init(). */
@@ -234,6 +359,52 @@ const Target& target();
 const Session& session();
 const Info& info();
 const Trail& trail();
+
+/**
+ * Feed the panel a resolved route. `origin`/`dest` are display codes (IATA or ICAO,
+ * either may be empty when the API does not know that end), `arrival_epoch` the
+ * expected arrival in epoch seconds, `clock_epoch` the Date header of the same response
+ * (0 when it could not be parsed -- the route is still worth showing).
+ */
+void setRouteFromLookup(const char* origin, const char* dest, long arrival_epoch,
+                        long clock_epoch);
+
+/** True when the cache says another lookup is due and the daily budget allows it. */
+bool routeWanted();
+
+/** Record an attempt; call right before the request, never after. */
+void noteRouteAttempt();
+/** The lookup could not even run (heap): keep the route, retry in a minute. */
+void noteRouteDeferred();
+/** The lookup ran and answered without a usable route: back off for five minutes. */
+void noteRouteFailure();
+
+const RouteCache& routeCache();
+
+/** Panel ETA in minutes at `now_ms`, or -1 when there is nothing to count down to. */
+float etaMinutesAt(unsigned long now_ms);
+
+/**
+ * Remember the followed aircraft's ICAO address (lowercased), learned from the primary feed
+ * while the flight is still visible. OpenSky has no callsign search, so this hex is the only
+ * handle the fallback has -- and it is persisted, because a reboot in the middle of a
+ * coverage gap must not lose the identity of the flight being followed.
+ */
+void noteTargetHex(const char* hex);
+
+/** Stored hex, "" when unknown. Lowercased. */
+const char* targetHex();
+
+/**
+ * What the panel calls the flight. A hex target is the only handle the user can type, but
+ * "ITY673" is what names the flight on screen -- set it whenever the aircraft's callsign
+ * becomes known (from the feed or from the fallback).
+ */
+void setDisplayId(const char* id);
+
+/** True while the fix on screen came from the OpenSky fallback rather than the feed. */
+void setFixFromFallback(bool from_fallback);
+bool fixFromFallback();
 
 /** Feed one target poll result: state, session, trail and info all follow from it. */
 void onReport(bool found, bool airborne, float lat, float lon, float gs_knots,

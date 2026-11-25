@@ -13,19 +13,72 @@ namespace {
 // ui::radar owns the same namespace and two open handles would conflict.
 constexpr char kPrefsNamespace[] = "planeradar";
 constexpr char kPrefsFollowKey[] = "follow";
+constexpr char kPrefsFollowHexKey[] = "follow_hex";
+/** The callsign the stored hex was learned for: a callsign change must not inherit it. */
+constexpr char kPrefsFollowHexOwnerKey[] = "follow_hex_id";
 
 Target s_target;
 Session s_session;
 Info s_info;
 Trail s_trail;
+RouteCache s_route;
+/** The followed aircraft's ICAO address, "" when never seen in the primary feed. */
+char s_target_hex[7] = {};
+bool s_fix_from_fallback = false;
+
+/** Store (lowercased) in RAM; empty clears. */
+void setTargetHex(const char* hex) {
+  s_target_hex[0] = '\0';
+  if (hex == nullptr) {
+    return;
+  }
+  size_t w = 0;
+  for (const char* p = hex; *p != '\0' && w + 1 < sizeof(s_target_hex); ++p) {
+    s_target_hex[w++] = (*p >= 'A' && *p <= 'F') ? static_cast<char>(*p - 'A' + 'a') : *p;
+  }
+  s_target_hex[w] = '\0';
+}
+
+/**
+ * The hex persisted for the current callsign target, if any.
+ *
+ * Two things make a stored hex unusable and both are checked here: a short one (a truncated
+ * write from an earlier build pointed the fallback at an address that does not exist), and
+ * one learned for a different callsign (a callsign change must not inherit the previous
+ * flight's address -- that would query the wrong aircraft).
+ */
+void loadStoredTargetHex() {
+  char buf[sizeof(s_target_hex)] = {};
+  char owner[kIdLen] = {};
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    prefs.getString(kPrefsFollowHexKey, buf, sizeof(buf));
+    prefs.getString(kPrefsFollowHexOwnerKey, owner, sizeof(owner));
+    prefs.end();
+  }
+  if (strlen(buf) != 6 || strcmp(owner, s_target.id) != 0) {
+    if (buf[0] != '\0') {
+      Serial.printf("follow: stored hex %s ignored (owner '%s')\n", buf, owner);
+    }
+    return;
+  }
+  setTargetHex(buf);
+}
 
 /** Point the module at `id` (empty string = off) and drop the per-flight state. */
 void adoptTarget(const char* id) {
   s_session.reset();
   s_trail.clear();
+  s_route.reset();
 
+  // The wall clock belongs to the board, not to the flight: a new target must not have
+  // to wait for another response to learn what time it is.
+  const services::fa::Clock clock = s_info.clock;
   s_target = Target();
   s_info = Info();
+  s_info.clock = clock;
+  s_fix_from_fallback = false;
+  s_target_hex[0] = '\0';
   if (id == nullptr || id[0] == '\0') {
     return;
   }
@@ -34,6 +87,15 @@ void adoptTarget(const char* id) {
   strncpy(s_target.id, id, sizeof(s_target.id) - 1);
   strncpy(s_info.id, id, sizeof(s_info.id) - 1);
   s_info.state = State::kNotSeen;
+
+  if (s_target.is_hex) {
+    // A target typed as a hex IS the ICAO address: no need to wait for the feed.
+    setTargetHex(id);
+  } else {
+    // A callsign keeps the address learned in an earlier session: without it, a reboot in
+    // the middle of a coverage gap would leave the fallback with nothing to query.
+    loadStoredTargetHex();
+  }
 }
 
 }  // namespace
@@ -79,6 +141,120 @@ void setTargetFromPortal(const char* text) {
 }
 
 void reset() { setTargetFromPortal(""); }
+
+/** Uppercase copy of an airport code; an empty string stays "unknown". */
+void copyCode(const char* src, char* out) {
+  out[0] = '\0';
+  if (src == nullptr) {
+    return;
+  }
+  size_t w = 0;
+  for (const char* p = src; *p != '\0' && w + 1 < kCodeLen; ++p) {
+    out[w++] = (*p >= 'a' && *p <= 'z') ? static_cast<char>(*p - 'a' + 'A') : *p;
+  }
+  out[w] = '\0';
+}
+
+/** Both callers below are inside this file: the clock and the route never land apart. */
+void setClock(long clock_epoch) {
+  if (clock_epoch > 0) {
+    s_info.clock.set(clock_epoch, millis());
+  }
+}
+
+void setRouteFromLookup(const char* origin, const char* dest, long arrival_epoch,
+                        long clock_epoch) {
+  setClock(clock_epoch);
+  copyCode(origin, s_info.origin);
+  copyCode(dest, s_info.destination);
+  s_info.route_known = s_info.origin[0] != '\0' && s_info.destination[0] != '\0';
+  s_info.arrival_epoch = arrival_epoch > 0 ? arrival_epoch : 0;
+
+  const unsigned long now = millis();
+  s_route.succeed(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+  Serial.printf("follow: route %s > %s, arrival %s\n",
+                s_info.origin[0] != '\0' ? s_info.origin : "?",
+                s_info.destination[0] != '\0' ? s_info.destination : "?",
+                s_info.arrival_epoch != 0 ? "known" : "unknown");
+}
+
+bool routeWanted() {
+  if (!s_target.active) {
+    return false;
+  }
+  const unsigned long now = millis();
+  return s_route.wantedAt(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+}
+
+void noteRouteAttempt() {
+  const unsigned long now = millis();
+  s_route.noteAttempt(now, services::fa::dayOf(s_info.clock.nowAt(now)));
+}
+
+void noteRouteDeferred() { s_route.defer(millis()); }
+
+void noteRouteFailure() { s_route.fail(); }
+
+const RouteCache& routeCache() { return s_route; }
+
+void noteTargetHex(const char* hex) {
+  char normalised[sizeof(s_target_hex)] = {};
+  size_t w = 0;
+  for (const char* p = hex != nullptr ? hex : ""; *p != '\0' && w + 1 < sizeof(normalised);
+       ++p) {
+    normalised[w++] = (*p >= 'A' && *p <= 'F') ? static_cast<char>(*p - 'A' + 'a') : *p;
+  }
+  normalised[w] = '\0';
+  if (strlen(normalised) != 6 || !s_target.active || s_target.is_hex) {
+    return;  // only a callsign target needs teaching, and only with a full address
+  }
+  if (strcmp(normalised, s_target_hex) == 0) {
+    return;  // nothing to do: never rewrite NVS on every poll
+  }
+  setTargetHex(normalised);
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, false)) {
+    prefs.putString(kPrefsFollowHexKey, s_target_hex);
+    prefs.putString(kPrefsFollowHexOwnerKey, s_target.id);
+    prefs.end();
+  }
+  Serial.printf("follow: target hex %s for %s\n", s_target_hex, s_target.id);
+}
+
+const char* targetHex() { return s_target_hex; }
+
+void setDisplayId(const char* id) {
+  char normalised[kIdLen] = {};
+  normalizeId(id, normalised, sizeof(normalised));
+  // A hex target's own id is the address: never replace it with itself, and never blank it.
+  if (normalised[0] == '\0' || strcmp(normalised, s_info.id) == 0 ||
+      strcmp(normalised, s_target_hex) == 0) {
+    return;
+  }
+  if (strcmp(normalised, s_target.id) == 0) {
+    return;
+  }
+  strncpy(s_info.id, normalised, sizeof(s_info.id) - 1);
+  Serial.printf("follow: display id %s\n", s_info.id);
+}
+
+void setFixFromFallback(bool from_fallback) {
+  if (from_fallback == s_fix_from_fallback) {
+    return;
+  }
+  s_fix_from_fallback = from_fallback;
+  s_info.fix_from_fallback = from_fallback;
+  Serial.printf("follow: fix source %s\n", from_fallback ? "OpenSky fallback" : "adsb.fi");
+}
+
+bool fixFromFallback() { return s_fix_from_fallback; }
+
+float etaMinutesAt(unsigned long now_ms) {
+  if (!s_info.route_known || s_info.arrival_epoch <= 0) {
+    return -1.0f;
+  }
+  return services::fa::minutesUntil(s_info.arrival_epoch, s_info.clock.nowAt(now_ms));
+}
 
 const Target& target() { return s_target; }
 const Session& session() { return s_session; }

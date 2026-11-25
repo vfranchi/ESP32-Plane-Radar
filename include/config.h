@@ -59,6 +59,20 @@ constexpr double kDefaultRadarLon = 4.9041;
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 5000;
 /**
+ * While following a flight the target lookup takes every poll, so the surrounding
+ * traffic is refreshed every Nth poll only -- and that is the cadence the area
+ * list (and its dead-reckoning base time) actually runs at.
+ */
+constexpr unsigned long kAdsbAreaFetchEveryPolls = 3;
+/**
+ * Age past which the area list counts as a dead feed and nothing is drawn. It has
+ * to outlast one full refresh cycle, or a normal follow session blanks the scope
+ * for a moment before every area fetch: at 3 polls x 5 s the refresh alone sits on
+ * 15 s, so an equal threshold fires on any fetch latency at all.
+ */
+constexpr unsigned long kAircraftStaleAfterMs =
+    kAdsbFetchIntervalMs * kAdsbAreaFetchEveryPolls + 10000UL;
+/**
  * Hard ceiling for one fetch (ms). Each network step has its own timeout, but a
  * weak or dropped link can park a socket read past all of them and leave the
  * fetch in flight forever -- the display then sits on "fetching" until the

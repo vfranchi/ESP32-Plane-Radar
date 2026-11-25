@@ -664,12 +664,13 @@ void drawAircraft() {
   const size_t snapshot_n = services::adsb::snapshotAircraft(
       planes, services::adsb::kMaxAircraft, &base_ms);
 
-  // No successful fetch for a while (dropped link, wedged request, broker gone):
+  // No successful area fetch for a while (dropped link, wedged request, broker gone):
   // show an empty scope rather than aircraft frozen -- and dead-reckoned -- at
-  // the positions of a poll that may be a minute old.
-  constexpr unsigned long kAircraftStaleAfterMs = 15000;
+  // the positions of a poll that may be a minute old. The threshold lives in
+  // config::kAircraftStaleAfterMs because it must outlast one full follow-mode
+  // refresh cycle (area list every Nth poll), not one poll.
   const bool stale =
-      base_ms == 0 || (millis() - base_ms) > kAircraftStaleAfterMs;
+      base_ms == 0 || (millis() - base_ms) > config::kAircraftStaleAfterMs;
   const size_t n = stale ? 0 : snapshot_n;
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
@@ -1012,8 +1013,9 @@ void formatDuration(unsigned long ms, char* out, size_t out_len) {
  * Split from the drawing half because the plate rectangle has to be known before the aircraft
  * tags are drawn (see drawAircraftTag), and because it is re-measured only once per frame.
  *
- * No clock time appears here: the firmware has no wall clock (no SNTP, no RTC), so
- * "landed at 14:32" cannot be printed. Everything shown is a live value or a duration.
+ * No clock time appears here: everything shown is a live value or a duration. The board
+ * has no RTC and no SNTP; the one wall clock it can get is the AeroAPI response's Date
+ * header, and that is used to count the ETA down, never printed as a time of day.
  */
 void layoutFollowPanel() {
   s_follow_panel_laid_out = true;
@@ -1044,12 +1046,33 @@ void layoutFollowPanel() {
       break;
   }
 
-  snprintf(lines[line_count++], sizeof(lines[0]), "%s %s", info.id, status);
+  // The fix may not be the feed's: over water adsb.fi has nothing and OpenSky answers
+  // behind the scenes. Say so on the state line -- the fallback's 10 s resolution makes
+  // the dot step, and a quiet substitution would read as the feed being that coarse.
+  snprintf(lines[line_count++], sizeof(lines[0]), "%s %s%s", info.id, status,
+           info.fix_from_fallback ? " osky" : "");
+
+  // The route comes right after the identity: it is what names the flight, so it must
+  // survive the four-line cap when speed and ETA compete for the last slot. An unknown
+  // route adds no line at all -- an unknown callsign must not leave a gap.
+  if (info.route_known && line_count < 4) {
+    snprintf(lines[line_count++], sizeof(lines[0]), "%s > %s", info.origin,
+             info.destination);
+  }
 
   char duration[12] = {};
   switch (info.state) {
     case services::follow::State::kLive: {
       snprintf(lines[line_count++], sizeof(lines[0]), "gs %.0f kt", info.gs_knots);
+      // Countdown to the AeroAPI arrival estimate. The wall clock behind it comes from
+      // the Date header of the route response, so it is still a duration on the panel --
+      // no clock time is ever printed.
+      const float eta_min = services::follow::etaMinutesAt(millis());
+      if (eta_min >= 0.0f && line_count < 4) {
+        formatDuration(static_cast<unsigned long>(eta_min * 60000.0f), duration,
+                       sizeof(duration));
+        snprintf(lines[line_count++], sizeof(lines[0]), "eta %s", duration);
+      }
       break;
     }
     case services::follow::State::kLanded:

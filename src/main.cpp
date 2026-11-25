@@ -11,6 +11,9 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "services/adsb_client.h"
+#include "services/fa_client.h"
+#include "services/opensky_fallback.h"
+#include "services/wall_clock.h"
 #include "services/fetch_watchdog.h"
 #include "services/flight_follow.h"
 #include "services/mqtt_client.h"
@@ -163,7 +166,52 @@ void adsbFetchTask(void*) {
         services::adsb::fetchTarget(tgt.id, tgt.is_hex);
 
         services::adsb::Aircraft target{};
-        const bool found = services::adsb::targetSnapshot(&target);
+        bool found = services::adsb::targetSnapshot(&target);
+        const bool primary = found && !services::adsb::targetFromFallback();
+        if (found && tgt.is_hex && target.callsign[0] != '\0') {
+          // A hex target: the panel should still name the flight when the name is known.
+          services::follow::setDisplayId(target.callsign);
+        }
+        if (primary && target.hex_valid) {
+          // Learn the ICAO address while the feed still has the flight: OpenSky has no
+          // callsign search, so this hex is what makes the fallback possible later.
+          services::follow::noteTargetHex(target.hex);
+        }
+
+        if (!primary && services::follow::targetHex()[0] != '\0' &&
+            services::open_sky::dueNow(millis())) {
+          // adsb.fi is a network of ground receivers: a flight leaves it over water or in
+          // a coverage hole while OpenSky still has it. One credit, one aircraft.
+          services::open_sky::noteAttempt(millis());
+          services::open_sky::Fix fix;
+          if (services::open_sky::lookupFix(services::follow::targetHex(), &fix)) {
+            services::adsb::Aircraft fb{};
+            fb.lat = fix.lat;
+            fb.lon = fix.lon;
+            fb.track_deg = fix.track_deg;
+            fb.track_valid = fix.track_valid;
+            fb.nose_deg = fix.track_deg;
+            fb.on_ground = fix.on_ground;
+            fb.gs_knots = fix.gs_knots;
+            fb.pos_age_ms = fix.pos_age_ms;
+            strncpy(fb.alt, fix.alt, sizeof(fb.alt));
+            // Identity the feed never gave us: the fallback row carries the callsign, and
+            // for a hex target that is the only way the panel can name the flight.
+            strncpy(fb.callsign, fix.callsign, sizeof(fb.callsign));
+            fb.alt_ft = 0;
+            services::adsb::setTargetFromFallback(fb);
+            found = services::adsb::targetSnapshot(&target);
+          } else {
+            services::open_sky::nextAttemptMs(services::clock::nowEpoch(millis()));
+          }
+        }
+        // The source flag follows what is actually being drawn: a fallback fix, or the
+        // hold-over of one, is not the feed.
+        if (services::adsb::targetFromFallback()) {
+          services::follow::setFixFromFallback(true);
+        } else if (primary) {
+          services::follow::setFixFromFallback(false);
+        }
         // Fast and off the apron: that is "live". Ground speed alone is not enough -- a
         // taxiing jet passes 40 kt, and a receiver that reports it at "0 ft" instead of
         // "ground" would otherwise make a landed airframe look airborne.
@@ -173,10 +221,47 @@ void adsbFetchTask(void*) {
         services::follow::onReport(found, airborne, target.lat, target.lon,
                                    target.gs_knots, millis());
 
-        if (poll % 3 == 0) {
+        if (poll % config::kAdsbAreaFetchEveryPolls == 0) {
           services::adsb::fetchUpdate(services::location::centerLat(),
                                       services::location::centerLon(),
                                       ui::radar::fetchRadiusKm());
+        }
+
+        if (services::follow::routeWanted()) {
+          // Once per flight, not once per poll: the leg is static, and this is the only
+          // request that needs a second TLS handshake. A Mode-S hex target has no
+          // callsign, so the tail number the feed reported is the only handle AeroAPI
+          // takes.
+          services::follow::noteRouteAttempt();
+          const char* ident = tgt.id;
+          bool is_registration = false;
+          if (tgt.is_hex) {
+            // AeroAPI takes a callsign, a registration or a fa_flight_id -- never an ICAO
+            // hex. The callsign is the better handle and the OpenSky fallback supplies it
+            // for exactly the flights the feed can no longer name.
+            services::adsb::Aircraft hex_target{};
+            if (services::adsb::targetSnapshot(&hex_target) &&
+                hex_target.callsign[0] != '\0') {
+              ident = hex_target.callsign;
+            } else if (services::adsb::targetSnapshot(&hex_target) &&
+                       hex_target.registration[0] != '\0') {
+              ident = hex_target.registration;
+              is_registration = true;
+            } else {
+              ident = "";  // nothing AeroAPI could resolve: skip without spending a call
+            }
+          }
+          services::fa::RouteResult route;
+          if (ident[0] != '\0' && services::fa::lookupRoute(ident, is_registration, &route)) {
+            services::follow::setRouteFromLookup(route.origin, route.dest,
+                                                 route.arrival_epoch, route.clock_epoch);
+          } else if (route.low_block) {
+            // The handshake did not fit: keep any route already known and retry shortly
+            // instead of blanking the panel for five minutes.
+            services::follow::noteRouteDeferred();
+          } else if (route.attempted) {
+            services::follow::noteRouteFailure();
+          }
         }
       } else {
         // The MQTT client stays connected across the fetch: halving the frame
@@ -246,6 +331,7 @@ void setup() {
   ui::radar::rangeInit();
   services::adsb::init();
   services::follow::init();
+  services::fa::loadKey();
   services::mqtt::init();
 
   if (wifiSetupConnect()) {

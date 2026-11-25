@@ -49,6 +49,7 @@ The same portal runs on the setup AP and on the device’s LAN IP while connecte
 | **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
 | **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
 | **Follow flight** | Callsign (e.g. `GLO1724`) or Mode-S hex (6 hex digits) of the flight to follow. **Blank = off** |
+| **FlightAware AeroAPI key** | Resolves the followed flight's route and ETA. Masked, stored in NVS, **blank = no route lookup** (everything else works) |
 | **Publish to Home Assistant (MQTT)** | Master switch. **Off by default**: with no broker host the radar never tries to connect |
 | **MQTT broker host / port** | Broker address; port empty = `1883`. Plain TCP only (see below) |
 | **MQTT username / password** | Broker credentials, stored in NVS. Sent only to the broker |
@@ -113,25 +114,55 @@ replaces the empty space below it.
   crawl. The whole scope moves: rings, runways, projection and fetch centre.
 - **Trail** — the last 64 fixes (about 5 minutes at the 5 s poll), drawn dim amber. A sample
   outside the scope breaks the line rather than being clipped onto the rim.
-- **Readout** — two lines: callsign and state on top (in the aircraft colour), then the current
-  numbers.
+- **Readout** — callsign and state on top (in the aircraft colour), then the route and the current
+  numbers, up to four lines.
 
 | State | Meaning | Readout |
 |-------|---------|---------|
-| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `gs 412 kt` |
+| `LIVE` | Airborne now (ground speed ≥ 40 kt, not reported on the ground) | `GRU > FCO` / `gs 412 kt` / `eta 16min` |
 | `ON GROUND` | Seen at the airport, never airborne yet this session | `gs 0 kt` |
 | `NOT LIVE` | Configured but not in the feed | `no position` plus the age of the last fix |
 | `LANDED` | Was airborne this session, now on the ground or gone | `block 1h05` |
 
-**Data sources.** Live positions come only from **adsb.fi** (`opendata.adsb.fi`), one request per
+**Data sources.** Live positions come from **adsb.fi** (`opendata.adsb.fi`), one request per
 second at most — the followed flight is looked up every poll, the surrounding traffic every third
-one. Nothing else is queried: the firmware shows what the feed reports, so there is no origin, no
-destination and no ETA. Both were dropped on purpose — callsign-to-route databases are static
-snapshots, and a reused callsign made them name the wrong city pair with confidence.
+one.
 
-**No wall clock.** The firmware has no SNTP and no RTC, so the readout shows durations, never clock
-times: `block` is the time observed airborne, and `no position` carries the age of the last fix.
-"Landed at 14:32" cannot be printed without adding a time source.
+When adsb.fi loses the followed flight — it is a network of ground receivers, so a flight leaves
+it over water or in a coverage hole — the firmware asks **OpenSky Network** for that one aircraft
+(`/states/all?icao24=<hex>`, one credit, no bounding box) and keeps the radar drawing it. The
+panel says `osky` on the state line while the fix is not the feed's: OpenSky's resolution is 10 s
+anonymous, so the dot steps rather than glides. The callsign, type and registration stay the ones
+the feed taught, the trail joins across the switch, and dead reckoning bridges the gaps between
+two fallback requests.
+
+- **Credits** — the fallback costs 1 credit per call. The anonymous tier has **400/day**, so the
+  firmware spaces its asks from `X-Rate-Limit-Remaining` (≈50 s with a few hours to UTC midnight),
+  backs off on `429`, and holds the last fix for up to 6 minutes while the feed stays blind. An
+  OpenSky API client (4 000 credits/day) is supported by the budget but not required.
+- **Identity** — OpenSky has no callsign search, so the board remembers the followed aircraft's
+  ICAO address (learned from adsb.fi, persisted in NVS). A flight adsb.fi has never seen has no
+  address to ask for: type the Mode-S hex in the portal instead of the callsign.
+
+The route (`GRU > FCO`) and the ETA come from **FlightAware AeroAPI**, one request per followed
+flight: `GET /flights/{ident}` with `max_pages=1`. It is a *dated* source, unlike the static
+callsign-to-route tables that used to name the wrong city pair — the API returns the legs around
+now and the firmware picks the one that covers the current time. A Mode-S hex target has no callsign,
+so the lookup uses the tail number the feed reports.
+
+- **Key** — set **FlightAware AeroAPI key** in the portal (masked, stored in NVS). Blank disables the
+  lookup: without a key the radar shows exactly what it showed before, and the stripdown wipes it.
+- **Cost** — AeroAPI's Personal tier charges $0.005 per result set with $5 of free usage a month. The
+  firmware caches one route per callsign per day and caps itself at **12 lookups a day**, so the
+  worst case is about $0.06/day even when every lookup fails.
+- **No route, no line** — a blocked, unknown or not-yet-scheduled flight simply omits the route line,
+  and the panel keeps its three lines. Positions never depend on this API.
+
+**No wall clock.** The firmware has no SNTP and no RTC. The one clock it gets is the `Date` header
+of the AeroAPI response, and it is only used to count the ETA down — the readout still shows
+durations, never clock times: `block` is the time observed airborne, `eta` is minutes to arrival, and
+`no position` carries the age of the last fix. "Landed at 14:32" cannot be printed without a real
+time source.
 
 **Credit.** ADS-B data courtesy of [adsb.fi](https://adsb.fi) — please consider feeding them a
 receiver.
@@ -213,8 +244,10 @@ include/
     mqtt_config.h          — the 8 portal fields in NVS
     mqtt_discovery.h       — pure discovery payload builders (host-tested)
     nearest_aircraft.h     — pure distance math (host-tested)
-    flight_follow.h        — follow-target identity, session state, trail, ETA math (host-tested)
+    flight_follow.h        — follow-target identity, session state, trail, route cache (host-tested)
     flight_follow.cpp      — the same, plus NVS and the live state
+    fa_route.h             — Date-header clock, leg selection, ETA countdown (host-tested)
+    fa_client.h            — AeroAPI key + route lookup API
 data/
   ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/

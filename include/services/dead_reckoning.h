@@ -15,9 +15,12 @@ constexpr float kKmPerKnot = 1.852f;
 /**
  * Longest extrapolation allowed, in seconds. The feed can go quiet (a failed
  * fetch, a dropped link): without this the aircraft keeps flying along its last
- * track for as long as the board is up.
+ * track for as long as the board is up. Must cover one whole area-refresh cycle
+ * while following (config::kAdsbAreaFetchEveryPolls polls), or the surrounding
+ * traffic sits frozen between two refreshes; past that the renderer's stale gate
+ * is what stops the drawing.
  */
-constexpr float kMaxElapsedSec = 4.5f;
+constexpr float kMaxElapsedSec = 15.0f;
 
 namespace detail {
 

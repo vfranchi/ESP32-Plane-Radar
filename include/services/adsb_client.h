@@ -29,6 +29,19 @@ struct Aircraft {
   uint32_t pos_age_ms;
   char callsign[9];
   char type[5];
+  /**
+   * Tail number as the feed reports it ("r"). Empty for military or otherwise
+   * unregistered airframes. This is the only handle a Mode-S hex target gives the
+   * FlightAware lookup: AeroAPI takes a registration, not an ICAO hex address.
+   */
+  char registration[9];
+  /**
+   * ICAO 24-bit address, lowercased to match OpenSky's form. The fallback query takes a
+   * hex and nothing else, and OpenSky has no callsign search, so this is what keeps a
+   * callsign target findable once adsb.fi loses it.
+   */
+  char hex[7];
+  bool hex_valid;
   char alt[12];
   /**
    * Barometric (or geometric) altitude in ft, or ui::altitude::kUnknownAltFt
@@ -110,6 +123,28 @@ bool targetValid();
 
 /** Copy of the followed aircraft, taken under the same lock as the area list. */
 bool targetSnapshot(Aircraft* out);
+
+/**
+ * Publish a fix for the followed aircraft that did not come from the feed (the OpenSky
+ * fallback). Position and motion fields are taken from `fix`; callsign, type, registration
+ * and hex stay whatever the last primary fix said, so the tag keeps its type and the
+ * FlightAware lookup keeps its handle.
+ */
+void setTargetFromFallback(const Aircraft& fix);
+
+/**
+ * True while the followed aircraft's fix is the fallback's (or a hold-over of one). The
+ * panel uses it to say where the position came from; the fetch loop uses it to keep the
+ * dead-reckoning alive between two fallback requests, which are minutes apart by design.
+ */
+bool targetFromFallback();
+
+/**
+ * Close the keep-alive session to the feed; the next area fetch re-handshakes.
+ * Last resort before a second TLS handshake: releasing this returns the ~50 KB of
+ * mbedTLS record buffers that a lookup on another host needs.
+ */
+void releaseKeepAlive();
 
 /**
  * True while a fetch is in flight. Set on entry to fetchUpdate() and cleared on

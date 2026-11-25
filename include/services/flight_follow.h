@@ -28,9 +28,15 @@ constexpr unsigned long kRouteTtlMs = 12UL * 60UL * 60UL * 1000UL;
 constexpr unsigned long kRouteRetryMs = 300000UL;
 /**
  * Retry window after a lookup that never ran because the heap had no room for the TLS
- * handshake. Buffers are recycled within a minute, unlike a real API failure.
+ * handshake. Buffers are recycled within a minute, unlike a real API failure -- but "a
+ * minute" was a flat 60 s and that is too coarse to catch the window: measured on the
+ * board the first boot attempt missed the floor by 12 bytes and the very next one, 60 s
+ * later, had 45 KB. The wait escalates 10 s -> 20 s -> 40 s and caps here, so a transient
+ * low block heals in one or two tries while a persistently starved heap still backs off.
  */
 constexpr unsigned long kRouteDeferMs = 60000UL;
+/** First wait after a heap deferral; doubles per consecutive deferral up to kRouteDeferMs. */
+constexpr unsigned long kRouteDeferFirstMs = 10000UL;
 /**
  * Hard daily budget. AeroAPI's Personal tier charges $0.005 per result set and gives $5
  * of free usage a month, so 12 lookups a day is $0.06/day: inside the credit even when
@@ -244,6 +250,8 @@ struct RouteCache {
   bool attempted = false;
   unsigned long last_attempt_ms = 0;
   unsigned long retry_ms = kRouteRetryMs;
+  /** Current step of the heap-deferral ladder; 0 while not deferring. */
+  unsigned long defer_ms = 0;
   unsigned long budget_day = 0;
   unsigned lookups_today = 0;
 
@@ -286,19 +294,24 @@ struct RouteCache {
 
   /**
    * The lookup never ran (no room for the handshake). Unlike fail(), this keeps whatever
-   * route is already known -- an aged route still beats a blank panel -- and only pushes
-   * the next try out by the short window.
+   * route is already known -- an aged route still beats a blank panel -- and pushes the
+   * next try out by the short window, doubling it per consecutive deferral (10 s, 20 s,
+   * 40 s, then the kRouteDeferMs cap) so a transient low block is caught while it is open.
    */
   void defer(unsigned long now_ms) {
+    defer_ms = defer_ms == 0
+                   ? kRouteDeferFirstMs
+                   : (defer_ms >= kRouteDeferMs / 2 ? kRouteDeferMs : defer_ms * 2);
     attempted = true;
     last_attempt_ms = now_ms;
-    retry_ms = kRouteDeferMs;
+    retry_ms = defer_ms;
   }
 
   void succeed(unsigned long now_ms, unsigned long day) {
     valid = true;
     fetched_ms = now_ms;
     fetched_day = day;
+    defer_ms = 0;  // a resolved route starts the ladder over
   }
 
   void fail() { valid = false; }

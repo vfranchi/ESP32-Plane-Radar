@@ -16,6 +16,7 @@
 namespace {
 
 using services::follow::deriveState;
+using services::follow::kRouteDeferFirstMs;
 using services::follow::kRouteDeferMs;
 using services::follow::kRouteLookupsPerDay;
 using services::follow::kRouteRetryMs;
@@ -137,13 +138,47 @@ int main() {
     rc.fail();
     CHECK(!rc.usableAt(now, day));
 
-    // A deferral is not a failure: the next try comes in a minute, not five.
+    // A deferral is not a failure: the retry comes in seconds, not five minutes, and the
+    // wait doubles per consecutive deferral until the kRouteDeferMs cap.
     RouteCache deferred;
     deferred.noteAttempt(now, day);
     deferred.defer(now);
-    CHECK(!deferred.wantedAt(now + kRouteDeferMs - 1, day));
-    CHECK(deferred.wantedAt(now + kRouteDeferMs, day));
+    CHECK(!deferred.wantedAt(now + kRouteDeferFirstMs - 1, day));
+    CHECK(deferred.wantedAt(now + kRouteDeferFirstMs, day));       // 10 s
+
+    unsigned long t = now + kRouteDeferFirstMs;
+    deferred.noteAttempt(t, day);
+    deferred.defer(t);
+    CHECK(!deferred.wantedAt(t + kRouteDeferFirstMs * 2 - 1, day));
+    CHECK(deferred.wantedAt(t + kRouteDeferFirstMs * 2, day));      // 20 s
+
+    t += kRouteDeferFirstMs * 2;
+    deferred.noteAttempt(t, day);
+    deferred.defer(t);
+    CHECK(deferred.wantedAt(t + kRouteDeferFirstMs * 4, day));      // 40 s
+
+    t += kRouteDeferFirstMs * 4;
+    deferred.noteAttempt(t, day);
+    deferred.defer(t);
+    CHECK(!deferred.wantedAt(t + kRouteDeferMs - 1, day));          // capped at 60 s
+    CHECK(deferred.wantedAt(t + kRouteDeferMs, day));
+
+    t += kRouteDeferMs;
+    deferred.noteAttempt(t, day);
+    deferred.defer(t);
+    CHECK(deferred.wantedAt(t + kRouteDeferMs, day));               // stays capped
     CHECK(kRouteDeferMs < kRouteRetryMs);
+    CHECK(kRouteDeferFirstMs < kRouteDeferMs);
+
+    // A route that lands resets the ladder: the next deferral waits 10 s again.
+    RouteCache again = deferred;
+    again.succeed(t, day);   // resets defer_ms
+    again.valid = false;     // ...and then the route ages out
+    again.attempted = false;
+    again.noteAttempt(t + 1, day);
+    again.defer(t + 1);
+    CHECK(!again.wantedAt(t + 1 + kRouteDeferFirstMs - 1, day));
+    CHECK(again.wantedAt(t + 1 + kRouteDeferFirstMs, day));
 
     // Succeeding pins the route for 12 h and kills the backoff.
     RouteCache cached;

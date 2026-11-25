@@ -664,12 +664,13 @@ void drawAircraft() {
   const size_t snapshot_n = services::adsb::snapshotAircraft(
       planes, services::adsb::kMaxAircraft, &base_ms);
 
-  // No successful fetch for a while (dropped link, wedged request, broker gone):
+  // No successful area fetch for a while (dropped link, wedged request, broker gone):
   // show an empty scope rather than aircraft frozen -- and dead-reckoned -- at
-  // the positions of a poll that may be a minute old.
-  constexpr unsigned long kAircraftStaleAfterMs = 15000;
+  // the positions of a poll that may be a minute old. The threshold lives in
+  // config::kAircraftStaleAfterMs because it must outlast one full follow-mode
+  // refresh cycle (area list every Nth poll), not one poll.
   const bool stale =
-      base_ms == 0 || (millis() - base_ms) > kAircraftStaleAfterMs;
+      base_ms == 0 || (millis() - base_ms) > config::kAircraftStaleAfterMs;
   const size_t n = stale ? 0 : snapshot_n;
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];

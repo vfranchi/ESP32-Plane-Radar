@@ -221,7 +221,7 @@ void adsbFetchTask(void*) {
         services::follow::onReport(found, airborne, target.lat, target.lon,
                                    target.gs_knots, millis());
 
-        if (poll % 3 == 0) {
+        if (poll % config::kAdsbAreaFetchEveryPolls == 0) {
           services::adsb::fetchUpdate(services::location::centerLat(),
                                       services::location::centerLon(),
                                       ui::radar::fetchRadiusKm());

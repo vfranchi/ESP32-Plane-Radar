@@ -835,7 +835,14 @@ bool lookupRoute(const char* ident, bool is_registration, RouteResult* out) {
     return false;  // an empty ident can only produce an invalid request
   }
   // Not an attempt: the caller must not back off for a key that is not configured.
-  if (!keyPresent() || s_key_rejected) {
+  // Logged, because the alternative is a silent dead route: the panel simply never gets
+  // origin/destination and nothing in the serial says why.
+  if (!keyPresent()) {
+    Serial.println("fa: no AeroAPI key in NVS -- route lookup skipped");
+    return false;
+  }
+  if (s_key_rejected) {
+    Serial.println("fa: key was rejected earlier this session -- lookup skipped");
     return false;
   }
   out->attempted = true;

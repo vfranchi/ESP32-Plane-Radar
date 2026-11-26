@@ -107,31 +107,38 @@ void publishStateTopic(const char* key, const char* value, bool retained) {
   }
 }
 
+// Config state is retained: HA loses its in-memory copy on every restart, and
+// the ESP keeps its broker session alive across that restart, so there is no
+// reconnect republish to heal the entity -- it stays 'unknown' until the value
+// is changed by hand. Volatile telemetry is deliberately NOT retained.
+
 void publishRangeState() {
   char label[16];
   std::snprintf(label, sizeof(label), "%d km",
                 static_cast<int>(lroundf(ui::radar::rangeCurrent().ring3_km)));
-  publishStateTopic("range", label, false);
+  publishStateTopic("range", label, true);
 }
 
 void publishSwitchState(const char* key, bool on) {
-  publishStateTopic(key, on ? "ON" : "OFF", false);
+  publishStateTopic(key, on ? "ON" : "OFF", true);
 }
 
 void publishLocationState() {
   char buf[24];
   std::snprintf(buf, sizeof(buf), "%.6f", services::location::lat());
-  publishStateTopic("lat", buf, false);
+  publishStateTopic("lat", buf, true);
   std::snprintf(buf, sizeof(buf), "%.6f", services::location::lon());
-  publishStateTopic("lon", buf, false);
+  publishStateTopic("lon", buf, true);
 }
 
 /** The followed flight, editable from HA. The board normalizes the id (trim +
  *  upper-case) and rejects nonsense, so this is what it actually follows: a
- *  double tap clears the target and HA must not keep showing the old callsign. */
+ *  double tap clears the target and HA must not keep showing the old callsign.
+ *  An empty retained payload deletes the retained message, so a cleared target
+ *  comes back as 'unknown' after a restart, which is the honest state. */
 void publishFollowState() {
   const char* id = services::follow::target().id;
-  publishStateTopic("follow", id, false);
+  publishStateTopic("follow", id, true);
   // Recorded even if the publish failed: the telemetry tick republishes it.
   std::strncpy(s_last_follow, id, sizeof(s_last_follow) - 1);
   s_last_follow[sizeof(s_last_follow) - 1] = '\0';
